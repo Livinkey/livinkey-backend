@@ -15,7 +15,7 @@ const guestOrTenantAuthMiddleware = async (req, res, next) => {
         if (decoded.role !== "guest" && decoded.role !== "tenant") {
             throw new AuthError(403, "FORBIDDEN", "You don't have access to this area.");
         }
-        enforcePasswordChangeScope(decoded, req);
+        await enforcePasswordChangeScope(decoded, req);
         await assertAccountActive(decoded);
         if (decoded.role === "guest") req.guest = decoded;
         else req.tenant = decoded;

@@ -191,10 +191,12 @@ async function lastReading({ tenantId, roomId }) {
     if (roomId) {
         [rows] = await db.execute(
             `SELECT ${cols} FROM bills WHERE room_id = ? AND current_reading IS NOT NULL AND deleted_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM electricity_meter_readings emr WHERE emr.bill_id = bills.id AND emr.deleted_at IS NOT NULL)
              ORDER BY created_at DESC, id DESC LIMIT 1`, [roomId]);
     } else if (tenantId) {
         [rows] = await db.execute(
             `SELECT ${cols} FROM bills WHERE tenant_id = ? AND current_reading IS NOT NULL AND deleted_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM electricity_meter_readings emr WHERE emr.bill_id = bills.id AND emr.deleted_at IS NOT NULL)
              ORDER BY created_at DESC, id DESC LIMIT 1`, [tenantId]);
     } else rows = [];
     return rows[0] ? {
@@ -218,4 +220,99 @@ async function resolvePgId({ pgId, roomId, tenantIds }) {
     return null;
 }
 
-module.exports = { calculate, validateSettings, getSettings, getAllSettings, saveSettings, lastReading, resolvePgId, normaliseSlabs, r2 };
+
+// ============================================================
+// METER READING HISTORY
+// Readings live on bills; electricity_meter_readings is the history ledger
+// (one row per bill). It is synced from bills on demand so every bill path
+// (single, split, group) is always covered, and "delete" only hides the reading
+// from history - the bill itself is never touched.
+// ============================================================
+async function syncReadingsFromBills() {
+    await db.query(`
+        INSERT IGNORE INTO electricity_meter_readings
+          (bill_id, tenant_id, pg_id, room_id, billing_month, meter_mode, previous_reading, current_reading, units,
+           inverter_previous_reading, inverter_current_reading, inverter_units, amount, recorded_by, recorded_at)
+        SELECT b.id, b.tenant_id, COALESCE(ff.pg_id, td.pg_id), b.room_id, b.billing_month, COALESCE(b.meter_mode,'single'),
+               b.previous_reading, b.current_reading, b.units_consumed,
+               b.inverter_previous_reading, b.inverter_current_reading, b.inverter_units,
+               b.electricity_amount, b.created_by, b.created_at
+        FROM bills b
+        LEFT JOIN tenant_details td ON td.tenant_id = b.tenant_id
+        LEFT JOIN rooms rr ON rr.id = b.room_id
+        LEFT JOIN floors ff ON ff.id = rr.floor_id
+        WHERE b.deleted_at IS NULL AND b.current_reading IS NOT NULL
+    `);
+}
+
+function readingFilters(q = {}, scopePgIds = null) {
+    const where = ["e.deleted_at IS NULL"];
+    const params = [];
+    if (q.pg_id) { where.push("e.pg_id = ?"); params.push(Number(q.pg_id)); }
+    if (q.room_id) { where.push("e.room_id = ?"); params.push(Number(q.room_id)); }
+    if (q.tenant_id) { where.push("e.tenant_id = ?"); params.push(Number(q.tenant_id)); }
+    if (q.month) { where.push("e.billing_month = ?"); params.push(String(q.month)); }
+    if (q.from) { where.push("DATE(e.recorded_at) >= ?"); params.push(String(q.from)); }
+    if (q.to) { where.push("DATE(e.recorded_at) <= ?"); params.push(String(q.to)); }
+    if (q.q) {
+        where.push("(t.full_name LIKE ? OR r.room_number LIKE ? OR p.name LIKE ?)");
+        const like = `%${String(q.q).trim()}%`;
+        params.push(like, like, like);
+    }
+    if (Array.isArray(scopePgIds)) {
+        if (!scopePgIds.length) where.push("1=0");
+        else { where.push(`e.pg_id IN (${scopePgIds.map(() => "?").join(",")})`); params.push(...scopePgIds.map(Number)); }
+    }
+    return { where: where.join(" AND "), params };
+}
+
+const READING_FROM = `
+    FROM electricity_meter_readings e
+    LEFT JOIN tenants t ON t.id = e.tenant_id
+    LEFT JOIN pgs p ON p.id = e.pg_id
+    LEFT JOIN rooms r ON r.id = e.room_id
+    LEFT JOIN bills b ON b.id = e.bill_id
+    LEFT JOIN admins a ON a.id = e.recorded_by`;
+
+async function listReadings(q = {}, scopePgIds = null) {
+    await syncReadingsFromBills();
+    const { where, params } = readingFilters(q, scopePgIds);
+    const limit = Math.min(Math.max(parseInt(q.limit, 10) || 25, 1), 5000);
+    const offset = Math.max(parseInt(q.offset, 10) || 0, 0);
+    const [rows] = await db.query(
+        `SELECT e.id, e.bill_id, e.tenant_id, e.pg_id, e.room_id, e.billing_month, e.meter_mode,
+                e.previous_reading, e.current_reading, e.units,
+                e.inverter_previous_reading, e.inverter_current_reading, e.inverter_units,
+                e.amount, e.recorded_at, t.full_name AS tenant_name, p.name AS pg_name, r.room_number,
+                b.status AS bill_status, b.bill_group_id, a.name AS recorded_by_name
+         ${READING_FROM} WHERE ${where}
+         ORDER BY e.recorded_at DESC, e.id DESC LIMIT ${limit} OFFSET ${offset}`, params);
+    const [[tot]] = await db.query(
+        `SELECT COUNT(*) AS total, COALESCE(SUM(e.units),0) AS units, COALESCE(SUM(e.amount),0) AS amount ${READING_FROM} WHERE ${where}`, params);
+    return { rows, total: Number(tot.total), total_units: Number(tot.units), total_amount: Number(tot.amount) };
+}
+
+/** Hide readings from history. ids = explicit list, or filters = every reading matching the filter. */
+async function deleteReadings({ ids, filters }, adminId, scopePgIds = null) {
+    let targetIds = [];
+    if (Array.isArray(ids) && ids.length) {
+        targetIds = ids.map(Number).filter(n => Number.isInteger(n) && n > 0);
+    } else if (filters && typeof filters === "object") {
+        const { where, params } = readingFilters(filters, scopePgIds);
+        const [rows] = await db.query(`SELECT e.id ${READING_FROM} WHERE ${where}`, params);
+        targetIds = rows.map(r => r.id);
+    }
+    if (!targetIds.length) return 0;
+    let scopeSql = "", scopeParams = [];
+    if (Array.isArray(scopePgIds)) {
+        if (!scopePgIds.length) return 0;
+        scopeSql = ` AND pg_id IN (${scopePgIds.map(() => "?").join(",")})`;
+        scopeParams = scopePgIds.map(Number);
+    }
+    const [res] = await db.query(
+        `UPDATE electricity_meter_readings SET deleted_at = NOW(), deleted_by = ?
+         WHERE deleted_at IS NULL AND id IN (?)${scopeSql}`, [adminId || null, targetIds, ...scopeParams]);
+    return res.affectedRows || 0;
+}
+
+module.exports = { syncReadingsFromBills, listReadings, deleteReadings, calculate, validateSettings, getSettings, getAllSettings, saveSettings, lastReading, resolvePgId, normaliseSlabs, r2 };

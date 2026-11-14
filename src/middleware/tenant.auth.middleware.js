@@ -9,7 +9,7 @@ const tenantAuthMiddleware = async (req, res, next) => {
         if (decoded.role !== "tenant") {
             throw new AuthError(403, "FORBIDDEN", "You don't have access to this area.");
         }
-        enforcePasswordChangeScope(decoded, req);
+        await enforcePasswordChangeScope(decoded, req);
         await assertAccountActive(decoded);
         req.tenant = decoded;
         next();

@@ -245,9 +245,17 @@ const createBill = async (billData, files = {}) => {
         }
         billData.room_id = assignmentRows[0].room_id;
 
+        // Group bills pass the combined rent of all occupants explicitly. For a
+        // normal bill the rent is ALWAYS the tenant's own recorded rent.
+        if (String(billData.bill_mode || '') !== 'group') {
+            const ownRent = Number(assignmentRows[0].rent);
+            if (Number.isFinite(ownRent) && ownRent > 0) {
+                billData.rent_amount = ownRent;
+            }
+        }
         const rentInput = Number(billData.rent_amount);
         if (!Number.isFinite(rentInput) || rentInput <= 0) {
-            throw new Error("Rent amount must be greater than 0.");
+            throw new Error("Rent amount must be greater than 0. Set the tenant's rent first.");
         }
 
         // Multiple bills are intentionally allowed. A tenant may have any number
@@ -1944,12 +1952,16 @@ const createBillsForTenants = async (tenantIds, billData, files = {}) => {
         // multiple active tenants. This is enforced server-side as well as in
         // the admin UI so the billing rule cannot be bypassed by a client.
         const mode = requestedMode === 'group' && occupantCount > 1 ? 'group' : 'individual';
-        const roomRent = Number(members[0].room_rent || 0);
-        const recordedRentTotal = allOccupants.reduce((sum, x) => sum + Number(x.rent || 0), 0);
-        const roomTotalRent = roomRent > 0 ? roomRent : recordedRentTotal;
-        if (!Number.isFinite(roomTotalRent) || roomTotalRent <= 0) {
-            throw new Error("The selected room has no valid recorded rent.");
+        // RENT RULE: every tenant is billed the rent recorded on THEIR OWN tenant
+        // record (tenant_details.rent) - never the PG/room list price. A shared
+        // (full) room bill is the sum of the occupants' own rents.
+        const round2 = (n) => Math.round(Number(n) * 100) / 100;
+        const tenantRents = allOccupants.map(x => round2(x.rent || 0));
+        const badRent = allOccupants.find((x, i) => !Number.isFinite(tenantRents[i]) || tenantRents[i] <= 0);
+        if (badRent) {
+            throw new Error(`${badRent.full_name} has no valid rent recorded. Edit the tenant and set their rent before creating a bill.`);
         }
+        const roomTotalRent = round2(tenantRents.reduce((a, b) => a + b, 0));
 
         const electricity = Number(billData.electricity_amount || 0);
         const maintenance = Number(billData.maintenance_amount || 0);
@@ -1958,8 +1970,8 @@ const createBillsForTenants = async (tenantIds, billData, files = {}) => {
             throw new Error("Bill charges must be valid non-negative amounts.");
         }
 
-        // ALL room-level bill components are split in Split Bill mode: rent,
-        // electricity, maintenance and other charges. Allocate cents
+        // In Split Bill mode rent is each tenant's own rent; electricity,
+        // maintenance and other charges are split equally. Allocate cents
         // deterministically so the tenant bills always add back to the exact
         // original room bill (the final tenant receives any 0.01 remainder).
         const allocateEvenly = (value) => {
@@ -1969,7 +1981,7 @@ const createBillsForTenants = async (tenantIds, billData, files = {}) => {
             allocations[allocations.length - 1] = Math.round((base + remainder) * 100) / 100;
             return allocations;
         };
-        const rentAllocations = allocateEvenly(roomTotalRent);
+        const rentAllocations = tenantRents; // each tenant's own recorded rent
         const electricityAllocations = allocateEvenly(electricity);
         const maintenanceAllocations = allocateEvenly(maintenance);
         const otherAllocations = allocateEvenly(other);

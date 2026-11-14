@@ -85,7 +85,7 @@ const assertAccountActive = async (decoded) => {
     const key = `${isAdmin ? "a" : "t"}:${decoded.id}`;
     const cached = accountCache.get(key);
     if (cached && Date.now() - cached.at < ACCOUNT_CACHE_TTL_MS) {
-        if (!cached.value.ok) throw new AuthError(401, "ACCOUNT_DISABLED", cached.value.message);
+        if (!cached.value.ok) throw new AuthError(401, cached.value.code || "ACCOUNT_DISABLED", cached.value.message);
         return cached.value;
     }
 
@@ -94,7 +94,7 @@ const assertAccountActive = async (decoded) => {
         if (isAdmin) {
             [rows] = await db.execute("SELECT id, role, is_active FROM admins WHERE id = ? LIMIT 1", [decoded.id]);
         } else {
-            [rows] = await db.execute("SELECT id, role, is_active FROM tenants WHERE id = ? LIMIT 1", [decoded.id]);
+            [rows] = await db.execute("SELECT id, role, is_active, is_blocked, block_reason FROM tenants WHERE id = ? LIMIT 1", [decoded.id]);
         }
     } catch (dbError) {
         // Never treat a database hiccup as an authentication failure.
@@ -105,14 +105,24 @@ const assertAccountActive = async (decoded) => {
     let value;
     if (!rows.length) {
         value = { ok: false, message: "This account is no longer available. Please contact support." };
+    } else if (Number(rows[0].is_blocked) === 1) {
+        value = { ok: false, code: "ACCOUNT_BLOCKED", message: blockedMessage(rows[0].block_reason) };
     } else if (rows[0].is_active === 0 || rows[0].is_active === false) {
         value = { ok: false, message: "This account has been deactivated. Please contact support." };
     } else {
         value = { ok: true, role: rows[0].role };
     }
     accountCache.set(key, { at: Date.now(), value });
-    if (!value.ok) throw new AuthError(401, "ACCOUNT_DISABLED", value.message);
+    if (!value.ok) throw new AuthError(401, value.code || "ACCOUNT_DISABLED", value.message);
     return value;
+};
+
+/** Friendly text shown to a blocked tenant (login screen / session-ended notice). */
+const blockedMessage = (reason) => {
+    const r = String(reason || "").trim();
+    return r
+        ? `Your account has been blocked by the Livinkey admin. Reason: ${r}. Please contact your PG manager to get it unblocked.`
+        : "Your account has been blocked by the Livinkey admin. Please contact your PG manager to get it unblocked.";
 };
 
 const invalidateAccount = (id, isAdmin) => accountCache.delete(`${isAdmin ? "a" : "t"}:${id}`);
@@ -124,13 +134,32 @@ const PASSWORD_CHANGE_ALLOWED = [
     "/api/tenants/auth/change-password",
     "/api/guests/change-password"
 ];
-const enforcePasswordChangeScope = (decoded, req) => {
-    if (decoded.must_change_password) {
-        const path = (req.originalUrl || "").split("?")[0];
-        if (!PASSWORD_CHANGE_ALLOWED.includes(path)) {
-            throw new AuthError(403, "PASSWORD_CHANGE_REQUIRED", "Please change your password before continuing.");
+const enforcePasswordChangeScope = async (decoded, req) => {
+    if (!decoded.must_change_password) return;
+    const path = (req.originalUrl || "").split("?")[0];
+    if (PASSWORD_CHANGE_ALLOWED.includes(path)) return;
+
+    // The flag lives inside the JWT, so a token issued BEFORE the password was
+    // changed keeps saying "must change password" for its whole life. Ask the
+    // database: if the account has already changed its password, let the
+    // request through (and tell the client to use a fresh token via /login).
+    try {
+        const isAdmin = decoded.role === "super_admin" || decoded.role === "admin";
+        const [rows] = await db.execute(
+            isAdmin
+                ? "SELECT must_change_password FROM admins WHERE id = ? LIMIT 1"
+                : "SELECT must_change_password FROM tenants WHERE id = ? LIMIT 1",
+            [decoded.id]
+        );
+        if (rows.length && Number(rows[0].must_change_password) === 0) {
+            decoded.must_change_password = false;
+            return;
         }
+    } catch (e) {
+        console.error("Password-change flag check failed:", e.message);
+        throw new AuthError(503, "SERVICE_UNAVAILABLE", "We're having trouble reaching the server. Please try again in a moment.");
     }
+    throw new AuthError(403, "PASSWORD_CHANGE_REQUIRED", "Please change your password before continuing.");
 };
 
 const signDownloadToken = (subject, expiresIn = "5m") =>
@@ -146,6 +175,7 @@ module.exports = {
     verifyRequestToken,
     assertAccountActive,
     invalidateAccount,
+    blockedMessage,
     enforcePasswordChangeScope,
     signDownloadToken
 };

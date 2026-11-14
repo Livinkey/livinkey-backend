@@ -48,3 +48,11 @@
 - Backend was smoke-tested (auth, tokens, webhook rejection, CORS) but not against your live DB or gateways.
 - I made targeted UX improvements, not a ground-up visual redesign of all 27k lines of app UI.
 - Login/OTP lockouts are in-memory (fine for one server instance; use Redis if you scale out).
+# v4 update (Nov 2026)
+- App install/uninstall + last-opened detection rebuilt (device heartbeat, FCM dry-run probe every 6h, logout != uninstall).
+- Tenants: View (complete details), Block/Unblock with reason, clear blocked messages in the app.
+- First-login bug: password change now returns a fresh token (agreement modal + Agreements tab work); stale tokens also tolerated server-side.
+- Bills: rent comes from each tenant's own recorded rent, not the room/PG price.
+- Dashboard "Add tenant" now loads PGs/rooms on first open.
+- New "Meter readings" page: history table, filters, CSV export, delete (selected / all shown).
+- DB changes apply automatically at server start (config/schema.bootstrap.js); optional manual copy: migrations/014_*.sql

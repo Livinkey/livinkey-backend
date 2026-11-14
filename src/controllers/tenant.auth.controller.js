@@ -7,6 +7,7 @@ const db = require("../config/db");
 const { generateToken } = require("../services/token.service");
 const { generateAndSendTenantOTP, compareOTP } = require("../services/otp.service");
 const agreementService = require("../services/agreement.service");
+const { blockedMessage, invalidateAccount } = require("../utils/auth.core");
 
 exports.login = async (req, res) => {
     try {
@@ -28,6 +29,8 @@ exports.login = async (req, res) => {
                 t.email, 
                 t.password, 
                 t.is_active,
+                t.is_blocked,
+                t.block_reason,
                 t.must_change_password,
                 td.pg_id,
                 td.room_id,
@@ -69,7 +72,8 @@ exports.login = async (req, res) => {
         if (!tenant.is_active) {
             return res.status(403).json({
                 success: false,
-                message: "Account is disabled."
+                code: "ACCOUNT_DISABLED",
+            message: "Your account has been disabled. Please contact your PG manager."
             });
         }
 
@@ -84,6 +88,21 @@ exports.login = async (req, res) => {
             return res.status(401).json({
                 success: false,
                 message: "Invalid email or password."
+            });
+        }
+
+        // Blocked by an admin (e.g. documents not submitted): show a clear reason.
+        if (Number(tenant.is_blocked) === 1) {
+            await ActivityService.log(req, {
+                actorType: "tenant", actorName: tenant.full_name, actorPosition: "Tenant",
+                tenantId: tenant.id, pgId: tenant.pg_id || null, action: "login_blocked", module: "auth",
+                metadata: { result: "blocked", reason: tenant.block_reason || null }
+            });
+            return res.status(403).json({
+                success: false,
+                code: "ACCOUNT_BLOCKED",
+                message: blockedMessage(tenant.block_reason),
+                block_reason: tenant.block_reason || null
             });
         }
 
@@ -133,6 +152,8 @@ exports.login = async (req, res) => {
         // Remove sensitive data
         delete tenant.password;
         delete tenant.must_change_password;
+        delete tenant.is_blocked;
+        delete tenant.block_reason;
 
         return res.json({
             success: true,
@@ -228,10 +249,27 @@ exports.changePassword = async (req, res) => {
         );
 
         connection.release();
+        invalidateAccount(tenantId, false);
+
+        // The token the tenant used for this request still says
+        // "must_change_password". Hand back a clean one so the app can carry on
+        // straight away (agreement pop-up, push registration, every tab).
+        const [fresh] = await db.execute(
+            `SELECT id, email, full_name FROM tenants WHERE id = ? LIMIT 1`, [tenantId]
+        );
+        const token = generateToken({ id: tenantId, email: fresh[0]?.email, role: 'tenant' });
+        let agreement = null;
+        try {
+            const a = await agreementService.getTenantAgreement(tenantId);
+            agreement = a ? { required: a.enabled && !a.accepted, ...a } : null;
+        } catch (_) {}
 
         return res.json({
             success: true,
-            message: "Password changed successfully. Please login again."
+            message: "Password changed successfully.",
+            token,
+            must_change_password: false,
+            agreement
         });
 
     } catch (error) {

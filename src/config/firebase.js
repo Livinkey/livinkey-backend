@@ -89,32 +89,52 @@ const getTenantFCMTokens = async (tenantId) => {
 };
 
 /**
- * Save FCM token for a tenant
+ * Register / refresh a device for a person. Called on every app launch, so it
+ * also doubles as the "last opened" heartbeat.
+ *
+ * opts: { appVersion, opened (bool) }
+ * A token that is (re)registered is, by definition, installed: any earlier
+ * "uninstalled" / "logged out" markers are cleared. If the same physical phone
+ * was used by someone else before, that other person's row is switched to
+ * logged-out so they stop receiving this person's pushes (they stay "installed").
  */
-const saveFCMToken = async (tenantId, fcmToken, deviceType = 'android') => {
+const saveFCMToken = async (tenantId, fcmToken, deviceType = 'android', opts = {}) => {
   const db = require('./db');
   const connection = await db.getConnection();
-  
+  const appVersion = opts.appVersion ? String(opts.appVersion).slice(0, 40) : null;
+  const opened = opts.opened !== false; // default: registration happens on app open
+
   try {
-    // Check if token already exists
     const [existing] = await connection.execute(
       `SELECT id FROM tenant_devices WHERE tenant_id = ? AND fcm_token = ?`,
       [tenantId, fcmToken]
     );
-    
+
     if (existing.length > 0) {
       await connection.execute(
-        `UPDATE tenant_devices SET updated_at = NOW(), is_active = 1 WHERE id = ?`,
-        [existing[0].id]
+        `UPDATE tenant_devices
+            SET is_active = 1, device_type = ?, last_seen_at = NOW(),
+                last_opened_at = CASE WHEN ? = 1 THEN NOW() ELSE last_opened_at END,
+                app_version = COALESCE(?, app_version),
+                logged_out_at = NULL, uninstalled_at = NULL, updated_at = NOW()
+          WHERE id = ?`,
+        [deviceType, opened ? 1 : 0, appVersion, existing[0].id]
       );
     } else {
       await connection.execute(
-        `INSERT INTO tenant_devices (tenant_id, fcm_token, device_type, is_active, created_at) 
-         VALUES (?, ?, ?, 1, NOW())`,
-        [tenantId, fcmToken, deviceType]
+        `INSERT INTO tenant_devices
+           (tenant_id, fcm_token, device_type, is_active, created_at, last_seen_at, last_opened_at, app_version)
+         VALUES (?, ?, ?, 1, NOW(), NOW(), NOW(), ?)`,
+        [tenantId, fcmToken, deviceType, appVersion]
       );
     }
-    
+
+    // Same phone, different account: the previous account is logged out on it.
+    await connection.execute(
+      `UPDATE tenant_devices SET is_active = 0, logged_out_at = COALESCE(logged_out_at, NOW())
+        WHERE fcm_token = ? AND tenant_id <> ? AND is_active = 1`,
+      [fcmToken, tenantId]
+    );
   } finally {
     connection.release();
   }
@@ -272,7 +292,7 @@ const removeFCMToken = async (tenantId, fcmToken) => {
   
   try {
     await connection.execute(
-      `UPDATE tenant_devices SET is_active = 0, updated_at = NOW() 
+      `UPDATE tenant_devices SET is_active = 0, logged_out_at = NOW(), updated_at = NOW()
        WHERE tenant_id = ? AND fcm_token = ?`,
       [tenantId, fcmToken]
     );
@@ -290,7 +310,7 @@ const removeAllFCMTokens = async (tenantId) => {
   
   try {
     await connection.execute(
-      `UPDATE tenant_devices SET is_active = 0, updated_at = NOW() 
+      `UPDATE tenant_devices SET is_active = 0, logged_out_at = NOW(), updated_at = NOW()
        WHERE tenant_id = ?`,
       [tenantId]
     );
@@ -317,12 +337,59 @@ const deactivateDeadTokens = async (tokens, responses) => {
     if (!dead.length) return;
     const db = require('./db');
     await db.query(
-      `UPDATE tenant_devices SET is_active = 0, updated_at = NOW() WHERE fcm_token IN (?)`,
+      `UPDATE tenant_devices SET is_active = 0, uninstalled_at = COALESCE(uninstalled_at, NOW()), updated_at = NOW() WHERE fcm_token IN (?)`,
       [dead]
     );
   } catch (e) {
     console.error('Failed to deactivate dead FCM tokens:', e.message);
   }
+};
+
+
+/**
+ * Ask FCM (dry run - nothing is delivered, nobody is notified) whether each
+ * known token is still valid. Tokens FCM reports as not registered belong to
+ * apps that were uninstalled (or whose data was cleared) and are marked
+ * "uninstalled". Logged-out-but-installed devices are checked too, so a person
+ * who simply logged out is never mistaken for an uninstall.
+ * Returns { checked, uninstalled }.
+ */
+const probeInstalledDevices = async (opts = {}) => {
+  if (!isFirebaseEnabled || !messaging) return { checked: 0, uninstalled: 0, skipped: true };
+  const db = require('./db');
+  const where = opts.tenantId ? 'AND tenant_id = ?' : '';
+  const [rows] = await db.query(
+    `SELECT DISTINCT fcm_token FROM tenant_devices WHERE uninstalled_at IS NULL ${where}`,
+    opts.tenantId ? [opts.tenantId] : []
+  );
+  const tokens = rows.map(r => r.fcm_token).filter(Boolean);
+  let uninstalled = 0;
+
+  for (let i = 0; i < tokens.length; i += 500) {
+    const chunk = tokens.slice(i, i + 500);
+    try {
+      const response = await messaging.sendEach(
+        chunk.map(token => ({ token, data: { type: 'probe' } })),
+        true // dryRun
+      );
+      const dead = [];
+      response.responses.forEach((r, idx) => {
+        const code = r && r.error && r.error.code;
+        if (code === 'messaging/registration-token-not-registered' ||
+            code === 'messaging/invalid-registration-token') dead.push(chunk[idx]);
+      });
+      if (dead.length) {
+        await db.query(
+          `UPDATE tenant_devices SET is_active = 0, uninstalled_at = COALESCE(uninstalled_at, NOW()), updated_at = NOW()
+            WHERE fcm_token IN (?)`, [dead]);
+        uninstalled += dead.length;
+      }
+      await db.query(`UPDATE tenant_devices SET last_probe_at = NOW() WHERE fcm_token IN (?)`, [chunk]);
+    } catch (e) {
+      console.error('Install probe chunk failed:', e.message);
+    }
+  }
+  return { checked: tokens.length, uninstalled };
 };
 
 /**
@@ -374,6 +441,7 @@ module.exports = {
   removeAllFCMTokens,
   sendPushToUser,
   sendPushToUsers,
+  probeInstalledDevices,
   sendToUser: (userId, n, d) => sendPushToUser(userId, { title: n.title, body: n.body }, d || {}),
   isFirebaseEnabled,  // Export this so other modules can check
 };

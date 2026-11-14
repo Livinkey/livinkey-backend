@@ -23,8 +23,12 @@ const getUsers = async (req, res) => {
         const [rows] = await db.execute(`
             SELECT t.id, t.full_name, t.email, t.phone, t.role, t.is_active,
                    td.pg_id, p.name AS pg_name,
-                   EXISTS(SELECT 1 FROM tenant_devices d WHERE d.tenant_id=t.id AND d.is_active=1) AS installed,
-                   (SELECT MAX(d.updated_at) FROM tenant_devices d WHERE d.tenant_id=t.id AND d.is_active=1) AS last_app_activity,
+                   EXISTS(SELECT 1 FROM tenant_devices d WHERE d.tenant_id=t.id AND d.uninstalled_at IS NULL) AS installed,
+                   EXISTS(SELECT 1 FROM tenant_devices d WHERE d.tenant_id=t.id AND d.uninstalled_at IS NULL AND d.is_active=1) AS logged_in,
+                   EXISTS(SELECT 1 FROM tenant_devices d WHERE d.tenant_id=t.id AND d.uninstalled_at IS NOT NULL)
+                       AND NOT EXISTS(SELECT 1 FROM tenant_devices d WHERE d.tenant_id=t.id AND d.uninstalled_at IS NULL) AS uninstalled,
+                   (SELECT MAX(COALESCE(d.last_opened_at, d.last_seen_at, d.updated_at)) FROM tenant_devices d WHERE d.tenant_id=t.id) AS last_app_activity,
+                   (SELECT d.app_version FROM tenant_devices d WHERE d.tenant_id=t.id AND d.uninstalled_at IS NULL ORDER BY COALESCE(d.last_opened_at, d.last_seen_at, d.updated_at) DESC LIMIT 1) AS app_version,
                    (SELECT al.action FROM activity_logs al WHERE (al.tenant_id=t.id OR al.guest_id=t.id) ORDER BY al.created_at DESC, al.id DESC LIMIT 1) AS recent_action,
                    (SELECT al.created_at FROM activity_logs al WHERE (al.tenant_id=t.id OR al.guest_id=t.id) ORDER BY al.created_at DESC, al.id DESC LIMIT 1) AS recent_activity_at,
                    (SELECT COALESCE(al.actor_name, a.name, 'System') FROM activity_logs al LEFT JOIN admins a ON a.id=al.performed_by_admin_id WHERE (al.tenant_id=t.id OR al.guest_id=t.id) ORDER BY al.created_at DESC, al.id DESC LIMIT 1) AS recent_actor_name,
@@ -163,4 +167,17 @@ const exportCsv = async (req,res) => {
     }
 };
 
-module.exports = { getUsers, getActivities, getStats, sendMessage, exportCsv };
+const recheckInstalls = async (req,res) => {
+    try {
+        if (!await can(req,"view")) return res.status(403).json({success:false,message:"You don't have permission to view activity logs."});
+        const tenantId = req.body?.tenant_id ? Number(req.body.tenant_id) : null;
+        const r = await Firebase.probeInstalledDevices(tenantId ? {tenantId} : {});
+        if (r.skipped) return res.status(503).json({success:false,message:"Push service is not configured on the server, so installs cannot be re-checked."});
+        res.json({success:true,message:`Checked ${r.checked} device(s); ${r.uninstalled} found uninstalled.`,data:r});
+    } catch(e) {
+        console.error("Install recheck error:",e);
+        res.status(500).json({success:false,message:"Could not re-check installs."});
+    }
+};
+
+module.exports = { recheckInstalls, getUsers, getActivities, getStats, sendMessage, exportCsv };

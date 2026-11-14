@@ -8,7 +8,7 @@ const authMiddleware = async (req, res, next) => {
         if (decoded.role !== "super_admin" && decoded.role !== "admin") {
             throw new AuthError(403, "FORBIDDEN", "You don't have access to this area.");
         }
-        enforcePasswordChangeScope(decoded, req);
+        await enforcePasswordChangeScope(decoded, req);
         const account = await assertAccountActive(decoded);
         // Trust the role stored in the database, not the one baked into an old token.
         decoded.role = account.role || decoded.role;

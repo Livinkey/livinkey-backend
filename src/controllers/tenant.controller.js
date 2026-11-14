@@ -239,8 +239,9 @@ const getTenantById = async (req, res) => {
             }
         };
 
+        const { password: _pw, otp: _otp, reset_token: _rt, ...safeTenant } = tenant;
         const formattedTenant = {
-            ...tenant,
+            ...safeTenant,
             paid_from: formatDateString(tenant.paid_from),
             paid_till: formatDateString(tenant.paid_till),
             arrival_date: formatDateString(tenant.arrival_date),
@@ -690,7 +691,155 @@ const getEFRROExpiringList = async (req, res) => {
     }
 };
 
+// ============================================================
+// FULL DETAILS (read-only "View" in Tenants Management)
+// ============================================================
+const getTenantFullDetails = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (!id) return res.status(400).json({ success: false, message: "Invalid tenant id." });
+
+        const [people] = await db.execute(
+            `SELECT t.id, t.role, t.full_name, t.email, t.nationality, t.country_code, t.phone,
+                    t.international_phone, t.parent_phone, t.gender, t.is_active, t.status, t.checkout_date,
+                    t.must_change_password, t.created_at, t.updated_at,
+                    t.is_blocked, t.block_reason, t.blocked_at, t.blocked_by,
+                    ab.name AS blocked_by_name, ac.name AS created_by_name,
+                    td.pg_id, td.room_id, td.residency, td.aadhaar_id, td.father_aadhaar_id, td.c_form_number,
+                    td.efrro_from, td.efrro_till, td.rent, td.security_fee, td.payment_date, td.paid_from, td.paid_till,
+                    td.arrival_date, td.period_of_stay, td.has_vehicle, td.vehicle_number,
+                    p.name AS pg_name, r.room_number, r.capacity, r.rent AS room_list_rent
+             FROM tenants t
+             LEFT JOIN tenant_details td ON td.tenant_id = t.id
+             LEFT JOIN pgs p ON p.id = td.pg_id
+             LEFT JOIN rooms r ON r.id = td.room_id
+             LEFT JOIN admins ab ON ab.id = t.blocked_by
+             LEFT JOIN admins ac ON ac.id = t.created_by
+             WHERE t.id = ? LIMIT 1`, [id]);
+        if (!people.length) return res.status(404).json({ success: false, message: "Tenant not found." });
+        const person = people[0];
+
+        const safe = async (fn, fallback) => { try { return await fn(); } catch (e) { console.error("Tenant view part failed:", e.message); return fallback; } };
+
+        const [documents, bills, devices, roommates, agreement] = await Promise.all([
+            safe(async () => (await db.execute(
+                `SELECT id, document_type, original_name, document_url, review_status, review_note, created_at
+                 FROM tenant_documents WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at DESC`, [id]))[0], []),
+            safe(async () => (await db.execute(
+                `SELECT b.id, b.billing_month, b.rent_amount, b.electricity_amount, b.maintenance_amount, b.other_charges,
+                        b.total_amount, b.paid_amount, b.fine_amount, b.status, b.created_at
+                 FROM bills b
+                 WHERE b.deleted_at IS NULL AND (b.tenant_id = ? OR EXISTS (
+                        SELECT 1 FROM bill_group_members m INNER JOIN bill_groups g ON g.id = m.bill_group_id
+                        WHERE g.bill_id = b.id AND m.tenant_id = ?))
+                 ORDER BY b.created_at DESC LIMIT 12`, [id, id]))[0], []),
+            safe(async () => (await db.execute(
+                `SELECT device_type, app_version, is_active, last_opened_at, last_seen_at, logged_out_at, uninstalled_at, created_at
+                 FROM tenant_devices WHERE tenant_id = ? ORDER BY COALESCE(last_opened_at, last_seen_at, updated_at) DESC LIMIT 5`, [id]))[0], []),
+            safe(async () => person.room_id ? (await db.execute(
+                `SELECT t.id, t.full_name, t.phone FROM tenant_details td INNER JOIN tenants t ON t.id = td.tenant_id
+                 WHERE td.room_id = ? AND td.tenant_id <> ? AND t.is_active = 1 AND (t.status IS NULL OR t.status = 'active')`, [person.room_id, id]))[0] : [], []),
+            safe(async () => {
+                const svc = require("../services/agreement.service");
+                const a = await svc.getTenantAgreement(id);
+                return !a || !a.enabled ? "not_required" : (a.accepted ? "accepted" : "pending");
+            }, "unknown")
+        ]);
+
+        const due = bills.reduce((n, b) => {
+            if (b.status === "paid") return n;
+            return n + Math.max(Number(b.total_amount || 0) + Number(b.fine_amount || 0) - Number(b.paid_amount || 0), 0);
+        }, 0);
+
+        const liveDevices = devices.filter(d => !d.uninstalled_at);
+        const lastOpened = devices.reduce((m, d) => {
+            const v = d.last_opened_at || d.last_seen_at;
+            return v && (!m || new Date(v) > new Date(m)) ? v : m;
+        }, null);
+
+        return res.json({
+            success: true,
+            data: {
+                tenant: person,
+                documents, bills, roommates,
+                agreement_status: agreement,
+                outstanding_due: due,
+                app: {
+                    installed: liveDevices.length > 0,
+                    logged_in: liveDevices.some(d => Number(d.is_active) === 1),
+                    last_opened_at: lastOpened,
+                    app_version: (liveDevices[0] && liveDevices[0].app_version) || null,
+                    devices
+                }
+            }
+        });
+    } catch (error) {
+        console.error("Tenant full details error:", error);
+        return res.status(500).json({ success: false, message: "Could not load tenant details." });
+    }
+};
+
+// ============================================================
+// BLOCK / UNBLOCK
+// ============================================================
+const blockTenant = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const reason = String(req.body?.reason || "").trim();
+        if (!id) return res.status(400).json({ success: false, message: "Invalid tenant id." });
+        if (reason.length < 3) return res.status(400).json({ success: false, message: "Please enter the reason for blocking (it is shown to the tenant)." });
+        if (reason.length > 500) return res.status(400).json({ success: false, message: "The reason must be 500 characters or fewer." });
+
+        const [rows] = await db.execute(`SELECT id, role, full_name, is_blocked FROM tenants WHERE id = ? AND role = 'tenant' LIMIT 1`, [id]);
+        if (!rows.length) return res.status(404).json({ success: false, message: "Tenant not found." });
+
+        await db.execute(
+            `UPDATE tenants SET is_blocked = 1, block_reason = ?, blocked_at = NOW(), blocked_by = ? WHERE id = ?`,
+            [reason, req.admin.id, id]);
+        require("../utils/auth.core").invalidateAccount(id, false);
+
+        // Stop pushes to a blocked tenant's devices (keep install status intact)
+        try { await db.execute(`UPDATE tenant_devices SET is_active = 0 WHERE tenant_id = ?`, [id]); } catch (_) {}
+
+        try {
+            await require("../services/activity.log.service").adminAction(req, "tenant_blocked", "tenants", {
+                tenantId: id, entityType: "tenant", entityId: id, metadata: { reason }
+            });
+        } catch (_) {}
+
+        return res.json({ success: true, message: `${rows[0].full_name} is now blocked.` });
+    } catch (error) {
+        console.error("Block tenant error:", error);
+        return res.status(500).json({ success: false, message: "Could not block the tenant." });
+    }
+};
+
+const unblockTenant = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (!id) return res.status(400).json({ success: false, message: "Invalid tenant id." });
+        const [rows] = await db.execute(`SELECT id, full_name FROM tenants WHERE id = ? AND role = 'tenant' LIMIT 1`, [id]);
+        if (!rows.length) return res.status(404).json({ success: false, message: "Tenant not found." });
+
+        await db.execute(
+            `UPDATE tenants SET is_blocked = 0, block_reason = NULL, blocked_at = NULL, blocked_by = NULL WHERE id = ?`, [id]);
+        require("../utils/auth.core").invalidateAccount(id, false);
+        try {
+            await require("../services/activity.log.service").adminAction(req, "tenant_unblocked", "tenants", {
+                tenantId: id, entityType: "tenant", entityId: id, metadata: {}
+            });
+        } catch (_) {}
+        return res.json({ success: true, message: `${rows[0].full_name} has been unblocked.` });
+    } catch (error) {
+        console.error("Unblock tenant error:", error);
+        return res.status(500).json({ success: false, message: "Could not unblock the tenant." });
+    }
+};
+
 module.exports = {
+    getTenantFullDetails,
+    blockTenant,
+    unblockTenant,
     createTenant,
     getAllTenants,
     getTenantStats,

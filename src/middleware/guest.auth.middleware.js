@@ -9,7 +9,7 @@ const guestAuthMiddleware = async (req, res, next) => {
         if (decoded.role !== "guest") {
             throw new AuthError(403, "FORBIDDEN", "You don't have access to this area.");
         }
-        enforcePasswordChangeScope(decoded, req);
+        await enforcePasswordChangeScope(decoded, req);
         await assertAccountActive(decoded);
         req.guest = decoded;
         next();

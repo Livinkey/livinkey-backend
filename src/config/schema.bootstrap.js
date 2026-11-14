@@ -240,6 +240,66 @@ async function ensureSchema() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `).catch(e => console.error("maintenance_forwards:", e.message));
 
+        // ---- v4: tenant blocking, accurate app install tracking, meter-reading history ----
+        await addColumnIfMissing(conn, "tenants", "is_blocked", "is_blocked TINYINT(1) NOT NULL DEFAULT 0");
+        await addColumnIfMissing(conn, "tenants", "block_reason", "block_reason VARCHAR(500) NULL");
+        await addColumnIfMissing(conn, "tenants", "blocked_at", "blocked_at DATETIME NULL");
+        await addColumnIfMissing(conn, "tenants", "blocked_by", "blocked_by INT NULL");
+
+        await addColumnIfMissing(conn, "tenant_devices", "last_seen_at", "last_seen_at DATETIME NULL");
+        await addColumnIfMissing(conn, "tenant_devices", "last_opened_at", "last_opened_at DATETIME NULL");
+        await addColumnIfMissing(conn, "tenant_devices", "app_version", "app_version VARCHAR(40) NULL");
+        await addColumnIfMissing(conn, "tenant_devices", "logged_out_at", "logged_out_at DATETIME NULL");
+        await addColumnIfMissing(conn, "tenant_devices", "uninstalled_at", "uninstalled_at DATETIME NULL");
+        await addColumnIfMissing(conn, "tenant_devices", "last_probe_at", "last_probe_at DATETIME NULL");
+        // Existing rows: use their last update as the best-known "last seen"
+        await conn.query(`UPDATE tenant_devices SET last_seen_at = updated_at WHERE last_seen_at IS NULL AND is_active = 1`)
+            .catch(e => console.error("tenant_devices backfill:", e.message));
+
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS electricity_meter_readings (
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                bill_id INT NOT NULL,
+                tenant_id INT NULL,
+                pg_id INT NULL,
+                room_id INT NULL,
+                billing_month VARCHAR(7) NULL,
+                meter_mode ENUM('single','dual') NOT NULL DEFAULT 'single',
+                previous_reading DECIMAL(12,2) NULL,
+                current_reading DECIMAL(12,2) NULL,
+                units DECIMAL(12,2) NULL,
+                inverter_previous_reading DECIMAL(12,2) NULL,
+                inverter_current_reading DECIMAL(12,2) NULL,
+                inverter_units DECIMAL(12,2) NULL,
+                amount DECIMAL(10,2) NULL,
+                recorded_by INT NULL,
+                recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at DATETIME NULL,
+                deleted_by INT NULL,
+                UNIQUE KEY uq_emr_bill (bill_id),
+                KEY idx_emr_tenant (tenant_id),
+                KEY idx_emr_pg (pg_id),
+                KEY idx_emr_room (room_id),
+                KEY idx_emr_deleted (deleted_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `).catch(e => console.error("electricity_meter_readings:", e.message));
+
+        // Backfill history from bills that already carry readings (one row per bill, never duplicated)
+        await conn.query(`
+            INSERT IGNORE INTO electricity_meter_readings
+              (bill_id, tenant_id, pg_id, room_id, billing_month, meter_mode, previous_reading, current_reading, units,
+               inverter_previous_reading, inverter_current_reading, inverter_units, amount, recorded_by, recorded_at)
+            SELECT b.id, b.tenant_id, COALESCE(ff.pg_id, td.pg_id), b.room_id, b.billing_month, COALESCE(b.meter_mode,'single'),
+                   b.previous_reading, b.current_reading, b.units_consumed,
+                   b.inverter_previous_reading, b.inverter_current_reading, b.inverter_units,
+                   b.electricity_amount, b.created_by, b.created_at
+            FROM bills b
+            LEFT JOIN tenant_details td ON td.tenant_id = b.tenant_id
+            LEFT JOIN rooms rr ON rr.id = b.room_id
+            LEFT JOIN floors ff ON ff.id = rr.floor_id
+            WHERE b.deleted_at IS NULL AND b.current_reading IS NOT NULL
+        `).catch(e => console.error("meter readings backfill:", e.message));
+
         console.log("✅ Admin console schema ready");
     } catch (error) {
         console.error("❌ Admin console schema setup failed:", error.message);

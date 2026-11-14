@@ -8,6 +8,7 @@ router.get("/users", controller.getUsers);
 router.get("/", controller.getActivities);
 router.get("/stats", controller.getStats);
 router.get("/export", controller.exportCsv);
+router.post("/recheck-installs", controller.recheckInstalls);
 router.post("/:id/message", controller.sendMessage);
 
 module.exports = router;

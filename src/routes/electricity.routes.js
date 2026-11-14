@@ -14,6 +14,10 @@ router.get("/last-reading", permission("bills", "add"), controller.lastReading);
 router.get("/settings", permission("bills", "view"), controller.listSettings);
 router.get("/settings/:pgId", permission("bills", "view"), controller.getSettings);
 
+// Meter reading history: view/export with bills.view, delete with bills.delete
+router.get("/readings", permission("bills", "view"), controller.listReadings);
+router.post("/readings/delete", permission("bills", "delete"), controller.deleteReadings);
+
 // Only a Super Admin may change tariffs
 router.put("/settings/:pgId", role("super_admin"), controller.saveSettings);
 router.post("/settings/:pgId/copy", role("super_admin"), controller.copySettings);

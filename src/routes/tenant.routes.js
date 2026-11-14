@@ -51,7 +51,7 @@ router.post(
     async (req, res) => {
         try {
             const tenantId = req.tenant.id;
-            const { fcm_token, device_type } = req.body;
+            const { fcm_token, device_type, app_version, event } = req.body;
             
             if (!fcm_token) {
                 return res.status(400).json({
@@ -63,7 +63,8 @@ router.post(
             await firebase.saveFCMToken(
                 tenantId, 
                 fcm_token, 
-                device_type || 'android'
+                device_type || 'android',
+                { appVersion: app_version, opened: event !== 'refresh' }
             );
             
             return res.status(200).json({
@@ -225,6 +226,28 @@ router.post(
     roleMiddleware("super_admin", "admin"),
     permissionMiddleware("archive", "delete"),
     tenantController.permanentDeleteTenantsBulk
+);
+
+// FULL DETAILS (View) - tenants.view
+router.get(
+    "/:id/full",
+    roleMiddleware("super_admin", "admin"),
+    permissionMiddleware("tenants", "view"),
+    tenantController.getTenantFullDetails
+);
+
+// BLOCK / UNBLOCK - tenants.edit
+router.post(
+    "/:id/block",
+    roleMiddleware("super_admin", "admin"),
+    permissionMiddleware("tenants", "edit"),
+    tenantController.blockTenant
+);
+router.post(
+    "/:id/unblock",
+    roleMiddleware("super_admin", "admin"),
+    permissionMiddleware("tenants", "edit"),
+    tenantController.unblockTenant
 );
 
 // GET TENANT BY ID - Requires tenants.view permission

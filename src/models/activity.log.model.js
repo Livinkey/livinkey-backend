@@ -56,10 +56,10 @@ const list = async (filters = {}) => {
     if (filters.module) { query += " AND al.module = ?"; params.push(filters.module); }
     if (filters.action) { query += " AND al.action = ?"; params.push(filters.action); }
     if (filters.app_status === "installed") {
-        query += " AND EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.is_active = 1)";
+        query += " AND EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.uninstalled_at IS NULL)";
     }
     if (filters.app_status === "not_installed") {
-        query += " AND NOT EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.is_active = 1)";
+        query += " AND NOT EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.uninstalled_at IS NULL)";
     }
     if (filters.from) { query += " AND al.created_at >= ?"; params.push(`${filters.from} 00:00:00`); }
     if (filters.to) { query += " AND al.created_at <= ?"; params.push(`${filters.to} 23:59:59`); }
@@ -97,8 +97,8 @@ const count = async (filters = {}) => {
     if (filters.actor_type) { query += " AND al.actor_type = ?"; params.push(filters.actor_type); }
     if (filters.module) { query += " AND al.module = ?"; params.push(filters.module); }
     if (filters.action) { query += " AND al.action = ?"; params.push(filters.action); }
-    if (filters.app_status === "installed") query += " AND EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.is_active = 1)";
-    if (filters.app_status === "not_installed") query += " AND NOT EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.is_active = 1)";
+    if (filters.app_status === "installed") query += " AND EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.uninstalled_at IS NULL)";
+    if (filters.app_status === "not_installed") query += " AND NOT EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.uninstalled_at IS NULL)";
     if (filters.from) { query += " AND al.created_at >= ?"; params.push(`${filters.from} 00:00:00`); }
     if (filters.to) { query += " AND al.created_at <= ?"; params.push(`${filters.to} 23:59:59`); }
     const [rows] = await db.execute(query, params);
@@ -120,7 +120,7 @@ const getStats = async () => {
             COUNT(DISTINCT t.id) AS total_tenants,
             COUNT(DISTINCT CASE WHEN td.tenant_id IS NOT NULL THEN t.id END) AS installed_tenants
         FROM tenants t
-        LEFT JOIN tenant_devices td ON td.tenant_id = t.id AND td.is_active = 1
+        LEFT JOIN tenant_devices td ON td.tenant_id = t.id AND td.uninstalled_at IS NULL
         WHERE t.role IN ('tenant','guest') AND t.is_active = 1
     `);
     const [pgs] = await db.execute(`
@@ -130,7 +130,7 @@ const getStats = async () => {
         FROM pgs p
         LEFT JOIN tenant_details d ON d.pg_id = p.id
         LEFT JOIN tenants t ON t.id = d.tenant_id AND t.is_active = 1
-        LEFT JOIN tenant_devices td ON td.tenant_id = t.id AND td.is_active = 1
+        LEFT JOIN tenant_devices td ON td.tenant_id = t.id AND td.uninstalled_at IS NULL
         GROUP BY p.id, p.name
         ORDER BY p.name
     `);

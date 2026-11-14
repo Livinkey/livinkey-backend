@@ -18,9 +18,9 @@ const permissionMiddleware = require("../middleware/permission.middleware");
 const firebase = require("../config/firebase");
 router.post("/device/fcm-token", guestAuthMiddleware, userActivity, async (req,res) => {
     try {
-        const { fcm_token, device_type } = req.body;
+        const { fcm_token, device_type, app_version, event } = req.body;
         if (!fcm_token) return res.status(400).json({success:false,message:"FCM token is required"});
-        await firebase.saveFCMToken(req.guest.id, fcm_token, device_type || "android");
+        await firebase.saveFCMToken(req.guest.id, fcm_token, device_type || "android", { appVersion: app_version, opened: event !== "refresh" });
         res.json({success:true,message:"FCM token saved successfully"});
     } catch(e) { console.error("Guest FCM save error:",e); res.status(500).json({success:false,message:"Internal server error"}); }
 });

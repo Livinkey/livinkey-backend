@@ -144,6 +144,22 @@ async function startServer() {
             }
         });
         console.log('📅 Maintenance completion reminder scheduler running every 10 minutes');
+        // ------------------------------------------------------------
+        // App install check: every 6 hours ask FCM (dry run, silent) which
+        // saved devices no longer exist, and mark those as uninstalled.
+        // ------------------------------------------------------------
+        const runInstallProbe = async () => {
+            try {
+                const firebase = require("./config/firebase");
+                const r = await firebase.probeInstalledDevices();
+                if (r && !r.skipped) console.log(`📱 Install check: ${r.checked} device(s) checked, ${r.uninstalled} marked uninstalled`);
+            } catch (error) {
+                console.error('❌ Install check failed:', error.message);
+            }
+        };
+        cron.schedule('15 */6 * * *', runInstallProbe);
+        setTimeout(runInstallProbe, 2 * 60 * 1000);
+        console.log('📅 App install check scheduled every 6 hours');
         // Start server on all interfaces
         const httpServer = app.listen(PORT, '0.0.0.0', () => {
             console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);

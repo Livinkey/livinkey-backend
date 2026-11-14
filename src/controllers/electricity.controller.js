@@ -63,3 +63,31 @@ exports.lastReading = async (req, res) => {
         res.json({ success: true, data });
     } catch (e) { console.error("Last reading:", e); res.status(500).json({ success: false, message: "Could not fetch the last reading." }); }
 };
+
+// ---------- Meter reading history ----------
+const pgScope = require("../utils/pg.scope");
+
+const scopeFor = async (req) => {
+    try {
+        if (pgScope && typeof pgScope.getAdminPgIds === "function") return await pgScope.getAdminPgIds(req.admin);
+    } catch (_) {}
+    return null; // null = no restriction
+};
+
+exports.listReadings = async (req, res) => {
+    try {
+        const data = await Electricity.listReadings(req.query || {}, await scopeFor(req));
+        res.json({ success: true, data: data.rows, total: data.total, total_units: data.total_units, total_amount: data.total_amount });
+    } catch (e) { console.error("Readings list:", e); res.status(500).json({ success: false, message: "Could not load meter readings." }); }
+};
+
+exports.deleteReadings = async (req, res) => {
+    try {
+        const { ids, filters, confirm } = req.body || {};
+        if (!(Array.isArray(ids) && ids.length) && !(filters && confirm === true)) {
+            return res.status(400).json({ success: false, message: "Choose the readings to delete." });
+        }
+        const n = await Electricity.deleteReadings({ ids, filters }, req.admin.id, await scopeFor(req));
+        res.json({ success: true, deleted: n, message: n ? `${n} reading${n === 1 ? "" : "s"} deleted from history.` : "No matching readings were found." });
+    } catch (e) { console.error("Readings delete:", e); res.status(500).json({ success: false, message: "Could not delete the readings." }); }
+};
