@@ -2,18 +2,19 @@ const fs = require('fs');
 const path = require('path');
 const generatePaymentReceipt = (paymentData, type) => {
     const paymentDate = paymentData.payment_date || paymentData.created_at || new Date();
-    const formattedDate = new Date(paymentDate).toLocaleDateString('en-IN', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric'
+    // Friendly, timezone-correct timestamp (e.g. "15 Nov 2026" / "3:42 PM") instead of a long raw date.
+    const TZ = process.env.APP_TIMEZONE || 'Asia/Kolkata';
+    const formattedDate = new Date(paymentDate).toLocaleDateString('en-GB', {
+        day: '2-digit', month: 'short', year: 'numeric', timeZone: TZ
     });
-    const formattedTime = new Date(paymentDate).toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit'
+    const formattedTime = new Date(paymentDate).toLocaleTimeString('en-US', {
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: TZ
     });
 
     const amount = type === 'proof' ? paymentData.amount_paid : paymentData.amount;
-    const transactionId = type === 'proof' ? paymentData.transaction_id : paymentData.transaction_id || 'N/A';
+    const rawTxn = String(paymentData.transaction_id || '');
+    // Internal references (PRF-/CASH-) are not real bank transaction IDs; show a clean value instead.
+    const transactionId = (!rawTxn || /^(PRF|CASH)-/i.test(rawTxn)) ? 'Verified by property team' : rawTxn;
     const paymentMethod = type === 'online' ? 'Online Payment' :
                          type === 'cash' ? 'Cash Payment' :
                          'Payment Proof';
@@ -27,12 +28,15 @@ const generatePaymentReceipt = (paymentData, type) => {
     const paidBefore = Math.max(billGrandTotal - paidBeforeLedger, 0);
     const dueAfter = Math.max(paidBefore - (parseFloat(amount || 0) || 0), 0);
     let logoDataUri = '';
-    try {
-        const logoPath = path.join(__dirname, '../../../frontend/assets/img/black_logo.png');
-        if (fs.existsSync(logoPath)) {
-            logoDataUri = `data:image/png;base64,${fs.readFileSync(logoPath).toString('base64')}`;
-        }
-    } catch (_) {}
+    const logoCandidates = [
+        { file: path.join(__dirname, '../assets/livinkey-logo.jpg'), mime: 'image/jpeg' },
+        { file: path.join(__dirname, '../../../frontend/assets/img/black_logo.png'), mime: 'image/png' }
+    ];
+    for (const c of logoCandidates) {
+        try {
+            if (fs.existsSync(c.file)) { logoDataUri = `data:${c.mime};base64,${fs.readFileSync(c.file).toString('base64')}`; break; }
+        } catch (_) {}
+    }
 
     // Get status with proper formatting
     let status = paymentData.status || 'completed';
@@ -327,7 +331,7 @@ const generatePaymentReceipt = (paymentData, type) => {
         <div class="receipt-container">
             <!-- Header -->
             <div class="receipt-header">
-                <h1>🧾 Payment Receipt</h1>
+                <h1>Payment Receipt</h1>
                 <div class="receipt-number">
                     ${receiptNumber}
                 </div>
@@ -338,12 +342,7 @@ const generatePaymentReceipt = (paymentData, type) => {
                 <!-- Company Info -->
                 <div class="company-info">
                     <div>
-                        ${logoDataUri ? `<img src="${logoDataUri}" alt="Livinkey" style="max-width:180px;max-height:54px;object-fit:contain;margin-bottom:10px;">` : ''}
-                        <div class="name">Livinkey</div>
-                        <div class="details">
-                            PG Management System<br>
-                            <span style="font-size: 12px;">Payment Receipt</span>
-                        </div>
+                        ${logoDataUri ? `<img src="${logoDataUri}" alt="Livinkey" style="height:56px;width:auto;max-width:220px;object-fit:contain;display:block;">` : '<div class="name">Livinkey</div>'}
                     </div>
                     <div class="details" style="text-align: right;">
                         <strong>Date:</strong> ${formattedDate}<br>
@@ -440,7 +439,7 @@ const generatePaymentReceipt = (paymentData, type) => {
                     This is a system-generated receipt. For any queries, please contact support.
                 </p>
                 <p style="font-size: 11px; color: #ccc; margin-top: 4px;">
-                    © 2022 Livinkey. All rights reserved.
+                    © ${new Date().getFullYear()} Livinkey. All rights reserved.
                 </p>
             </div>
         </div>

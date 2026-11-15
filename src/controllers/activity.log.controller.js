@@ -180,4 +180,39 @@ const recheckInstalls = async (req,res) => {
     }
 };
 
-module.exports = { recheckInstalls, getUsers, getActivities, getStats, sendMessage, exportCsv };
+
+const deleteActivities = async (req, res) => {
+    try {
+        // Deleting history is destructive: super admins always, others only with an explicit delete permission.
+        let allowed = req.admin.role === "super_admin";
+        if (!allowed) {
+            const [rows] = await db.execute(
+                `SELECT can_delete FROM admin_permissions WHERE admin_id = ? AND module_name = 'activity_logs' LIMIT 1`, [req.admin.id]);
+            allowed = !!rows[0]?.can_delete;
+        }
+        if (!allowed) return res.status(403).json({ success: false, message: "You don't have permission to delete activity logs." });
+
+        const { scope = "app", ids, filters, older_than_days, confirm } = req.body || {};
+        if (!["app", "admin", "logins"].includes(scope)) return res.status(400).json({ success: false, message: "Unknown log type." });
+        const hasIds = Array.isArray(ids) && ids.length > 0;
+        if (!hasIds && confirm !== true) {
+            return res.status(400).json({ success: false, message: "Choose the entries to delete, or confirm deleting everything that matches." });
+        }
+        if (scope !== "app" && req.admin.role !== "super_admin") {
+            return res.status(403).json({ success: false, message: "Only a super admin can delete the admin audit trail or sign-in history." });
+        }
+        const deleted = await ActivityLog.remove({ scope, ids: hasIds ? ids : null, filters, olderThanDays: older_than_days });
+        // Record that a deletion happened (kept outside every delete scope above except "admin" history, which is intentional).
+        await ActivityService.adminAction(req, "deleted", "system", {
+            entityType: "activity_logs",
+            metadata: { scope, deleted, by_ids: hasIds, older_than_days: older_than_days || null }
+        });
+        res.json({ success: true, deleted, message: deleted ? `${deleted} ${deleted === 1 ? "entry" : "entries"} deleted.` : "Nothing matched, so nothing was deleted." });
+    } catch (e) {
+        console.error("Activity delete error:", e);
+        res.status(500).json({ success: false, message: "Could not delete the selected entries." });
+    }
+};
+
+module.exports = {
+    deleteActivities, recheckInstalls, getUsers, getActivities, getStats, sendMessage, exportCsv };

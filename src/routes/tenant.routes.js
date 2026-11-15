@@ -39,6 +39,12 @@ router.get("/agreement/pdf", tenantAuthMiddleware, tenantAgreementController.dow
 // ============ TENANT PROFILE ROUTES (Protected) ============
 router.get("/profile", tenantAuthMiddleware, tenantProfileController.getProfile);
 
+// Self-service (mobile app): roommates + checkout
+const tenantSelfController = require("../controllers/tenant.self.controller");
+router.get("/roommates", tenantAuthMiddleware, tenantSelfController.getRoommates);
+router.get("/checkout/eligibility", tenantAuthMiddleware, tenantSelfController.checkoutEligibility);
+router.post("/checkout", tenantAuthMiddleware, tenantSelfController.checkoutSelf);
+
 // ============================================================
 // FCM TOKEN MANAGEMENT (Add after auth routes)
 // ============================================================

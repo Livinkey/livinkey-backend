@@ -12,6 +12,9 @@ const authMiddleware = async (req, res, next) => {
         const account = await assertAccountActive(decoded);
         // Trust the role stored in the database, not the one baked into an old token.
         decoded.role = account.role || decoded.role;
+        // The JWT carries no name; use the real person's name from the database so every
+        // message, email and audit entry is signed by the actual admin (never by their role).
+        if (account.name) decoded.name = account.name;
         req.admin = decoded;
         next();
     } catch (error) {

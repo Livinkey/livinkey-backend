@@ -38,18 +38,31 @@ const reviewDocument = async (documentId, action, note, admin) => {
     if (!doc) throw new Error('Document not found');
     const cleanNote = note ? String(note).trim().slice(0, 500) : null;
     if (action === 'reject' && !cleanNote) throw new Error('Please tell the tenant why the document was rejected.');
+    // A decision is final: approved documents stay approved, rejected ones are removed.
+    if (doc.review_status === 'approved') throw new Error('This document is already approved.');
     const status = action === 'approve' ? 'approved' : 'rejected';
-    await TenantDocumentModel.setReview(documentId, status, cleanNote, admin.id);
     const label = (DOCUMENT_TYPES[doc.document_type] || {}).label || doc.document_type;
+    if (action === 'approve') {
+        await TenantDocumentModel.setReview(documentId, status, cleanNote, admin.id);
+    } else {
+        // Rejected files are deleted automatically (storage + database); the tenant is told why and re-uploads.
+        if (doc.document_public_id) {
+            try { await deleteFile(doc.document_public_id, doc.document_resource_type); }
+            catch (e) { console.error('Rejected document file cleanup failed:', e.message); }
+        }
+        const conn = await db.getConnection();
+        try { await TenantDocumentModel.deleteDocument(conn, documentId, doc.tenant_id); }
+        finally { conn.release(); }
+    }
     try {
         const tenantNotifs = require('./tenant.notification.service');
         await tenantNotifs.sendTenantNotification(doc.tenant_id, action === 'approve' ? 'DOCUMENT_APPROVED' : 'DOCUMENT_REJECTED', {
             title: action === 'approve' ? 'Document approved' : 'Document needs attention',
             message: action === 'approve' ? `Your ${label} has been approved.` : `Your ${label} was rejected: ${cleanNote} Please upload it again.`,
-            entity_id: doc.id, entity_type: 'document', link: '/documents'
+            entity_id: action === 'approve' ? doc.id : null, entity_type: 'document', link: '/documents'
         });
     } catch (e) { console.error('Document review notification failed:', e.message); }
-    return { id: doc.id, review_status: status, review_note: cleanNote, tenant_id: doc.tenant_id, label };
+    return { id: doc.id, review_status: status, review_note: cleanNote, tenant_id: doc.tenant_id, label, removed: action === 'reject' };
 };
 
 // Upload document

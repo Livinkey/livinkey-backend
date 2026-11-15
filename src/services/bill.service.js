@@ -77,21 +77,16 @@ const updateTenantPaymentDates = async (connection, tenantId, paidFrom, paidTill
         throw new Error("Both paid_from and paid_till are required");
     }
 
+    // The admin-entered period is the source of truth: write it exactly so
+    // Tenant Management always reflects what was verified (no silent
+    // "only extend" behaviour that ignored corrected dates).
     await connection.execute(
         `UPDATE tenant_details
-         SET
-           paid_from = CASE
-             WHEN paid_from IS NULL OR ? < paid_from THEN ?
-             ELSE paid_from
-           END,
-           paid_till = CASE
-             WHEN paid_till IS NULL OR ? > paid_till THEN ?
-             ELSE paid_till
-           END
+         SET paid_from = ?, paid_till = ?
          WHERE tenant_id = ?`,
-        [paidFrom, paidFrom, paidTill, paidTill, tenantId]
+        [paidFrom, paidTill, tenantId]
     );
-    
+
     return { paid_from: paidFrom, paid_till: paidTill };
 };
 
@@ -1628,7 +1623,8 @@ const updateBill = async (billId, billData, files = {}) => {
         if (isNaN(maintenance) || maintenance < 0) throw new Error("Invalid maintenance amount");
         if (isNaN(other) || other < 0) throw new Error("Invalid other charges");
 
-        const totalAmount = rent + electricity + maintenance + other;
+        const r2 = (n) => Math.round(Number(n) * 100) / 100;
+        const totalAmount = r2(r2(rent) + r2(electricity) + r2(maintenance) + r2(other));
         const paidAmount = parseFloat(existing.paid_amount || 0);
         const fineAmount = parseFloat(existing.fine_amount || 0);
 
@@ -1644,6 +1640,11 @@ const updateBill = async (billId, billData, files = {}) => {
             other_charges_note: billData.other_charges_note !== undefined ? billData.other_charges_note : (existing.other_charges_note || null),
             total_amount: totalAmount
         });
+
+        // Keep the meter-readings history ledger in step with the edited electricity amount.
+        if (Math.abs(electricity - parseFloat(existing.electricity_amount || 0)) > 0.004) {
+            await connection.execute(`UPDATE electricity_meter_readings SET amount = ? WHERE bill_id = ?`, [r2(electricity), billId]).catch(() => {});
+        }
 
         // Optional meter image replacements
         const meterUpdate = {};
@@ -1954,14 +1955,16 @@ const createBillsForTenants = async (tenantIds, billData, files = {}) => {
         const mode = requestedMode === 'group' && occupantCount > 1 ? 'group' : 'individual';
         // RENT RULE: every tenant is billed the rent recorded on THEIR OWN tenant
         // record (tenant_details.rent) - never the PG/room list price. A shared
-        // (full) room bill is the sum of the occupants' own rents.
+        // (full) room bill charges that rent once (see GROUP BILL RULE below).
         const round2 = (n) => Math.round(Number(n) * 100) / 100;
         const tenantRents = allOccupants.map(x => round2(x.rent || 0));
         const badRent = allOccupants.find((x, i) => !Number.isFinite(tenantRents[i]) || tenantRents[i] <= 0);
         if (badRent) {
             throw new Error(`${badRent.full_name} has no valid rent recorded. Edit the tenant and set their rent before creating a bill.`);
         }
-        const roomTotalRent = round2(tenantRents.reduce((a, b) => a + b, 0));
+        // GROUP BILL RULE: roommates share ONE bill, so the rent is charged ONCE (the room's rent),
+        // never summed per tenant. If the occupants' recorded rents differ, the highest one is used.
+        const roomTotalRent = round2(Math.max(...tenantRents));
 
         const electricity = Number(billData.electricity_amount || 0);
         const maintenance = Number(billData.maintenance_amount || 0);

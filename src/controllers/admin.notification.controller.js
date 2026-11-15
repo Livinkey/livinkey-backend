@@ -108,7 +108,8 @@ exports.sendTenantNotification = async (req, res) => {
         // Create notification data
         const notificationData = {
             title: title.trim(),
-            message: message.trim(),
+            // Signed with the sender's real name (e.g. "— Jane Doe"), never with a role label.
+            message: req.admin.name ? `${message.trim()}\n\n— ${req.admin.name}` : message.trim(),
             entity_id: null,
             entity_type: 'admin_message',
             link: link && String(link).trim() ? String(link).trim() : '/tenant-notifications',
@@ -153,7 +154,7 @@ exports.sendTenantNotification = async (req, res) => {
                         tenant.full_name,
                         title.trim(),
                         message.trim(),
-                        req.admin.name || 'Livinkey Admin'
+                        req.admin.name || 'Livinkey Team'
                     );
                     emailSentCount++;
                 } catch (emailError) {

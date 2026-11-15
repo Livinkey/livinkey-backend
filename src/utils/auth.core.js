@@ -92,9 +92,9 @@ const assertAccountActive = async (decoded) => {
     let rows;
     try {
         if (isAdmin) {
-            [rows] = await db.execute("SELECT id, role, is_active FROM admins WHERE id = ? LIMIT 1", [decoded.id]);
+            [rows] = await db.execute("SELECT id, name, role, is_active FROM admins WHERE id = ? LIMIT 1", [decoded.id]);
         } else {
-            [rows] = await db.execute("SELECT id, role, is_active, is_blocked, block_reason FROM tenants WHERE id = ? LIMIT 1", [decoded.id]);
+            [rows] = await db.execute("SELECT id, full_name, role, is_active, is_blocked, block_reason FROM tenants WHERE id = ? LIMIT 1", [decoded.id]);
         }
     } catch (dbError) {
         // Never treat a database hiccup as an authentication failure.
@@ -110,7 +110,7 @@ const assertAccountActive = async (decoded) => {
     } else if (rows[0].is_active === 0 || rows[0].is_active === false) {
         value = { ok: false, message: "This account has been deactivated. Please contact support." };
     } else {
-        value = { ok: true, role: rows[0].role };
+        value = { ok: true, role: rows[0].role, name: rows[0].name || rows[0].full_name || null };
     }
     accountCache.set(key, { at: Date.now(), value });
     if (!value.ok) throw new AuthError(401, value.code || "ACCOUNT_DISABLED", value.message);

@@ -525,7 +525,7 @@ const submitPaymentProof = async (req, res) => {
     let connection = null;
     try {
         const tenantId = req.tenant.id;
-        const {
+        let {
             bill_id,
             transaction_id,
             amount_paid,
@@ -537,9 +537,10 @@ const submitPaymentProof = async (req, res) => {
         if (!bill_id && payment_scope !== 'outstanding') {
             return res.status(400).json({ success:false, message:"Bill ID is required." });
         }
-        if (!transaction_id) {
-            return res.status(400).json({ success:false, message:"Transaction ID is required." });
-        }
+        // Tenants no longer type a transaction ID: the screenshot is the proof. A unique internal
+        // reference is generated (the admin reads the real UTR from the screenshot when verifying).
+        transaction_id = String(transaction_id || '').trim()
+            || `PRF-${tenantId}-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
         const amount = Number(amount_paid);
         if (!Number.isFinite(amount) || amount <= 0) {
             return res.status(400).json({ success:false, message:"Valid payment amount is required." });

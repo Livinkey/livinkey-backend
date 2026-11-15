@@ -64,7 +64,10 @@ const list = async (filters = {}) => {
     if (filters.from) { query += " AND al.created_at >= ?"; params.push(`${filters.from} 00:00:00`); }
     if (filters.to) { query += " AND al.created_at <= ?"; params.push(`${filters.to} 23:59:59`); }
 
-    query += " ORDER BY al.created_at DESC LIMIT ? OFFSET ?";
+    if (filters.exclude_auth === "1" || filters.exclude_auth === 1 || filters.exclude_auth === true) {
+        query += " AND NOT (al.module = 'auth' AND al.action IN ('login','login_failed'))";
+    }
+    query += " ORDER BY al.created_at DESC, al.id DESC LIMIT ? OFFSET ?";
     const limit = Math.min(Math.max(parseInt(filters.limit, 10) || 50, 1), 500);
     const offset = Math.max(parseInt(filters.offset, 10) || 0, 0);
     params.push(limit, offset);
@@ -101,6 +104,9 @@ const count = async (filters = {}) => {
     if (filters.app_status === "not_installed") query += " AND NOT EXISTS (SELECT 1 FROM tenant_devices td WHERE td.tenant_id = al.tenant_id AND td.uninstalled_at IS NULL)";
     if (filters.from) { query += " AND al.created_at >= ?"; params.push(`${filters.from} 00:00:00`); }
     if (filters.to) { query += " AND al.created_at <= ?"; params.push(`${filters.to} 23:59:59`); }
+    if (filters.exclude_auth === "1" || filters.exclude_auth === 1 || filters.exclude_auth === true) {
+        query += " AND NOT (al.module = 'auth' AND al.action IN ('login','login_failed'))";
+    }
     const [rows] = await db.execute(query, params);
     return Number(rows[0]?.total || 0);
 };
@@ -141,4 +147,46 @@ const getStats = async () => {
     };
 };
 
-module.exports = { create, list, count, getStats };
+
+/**
+ * Permanently delete activity-log rows.
+ *   ids      -> exactly those rows
+ *   filters  -> every row matching the same filters list() understands
+ * `scope` keeps the two worlds apart so deleting app activity can never wipe the
+ * admin audit trail (or the reverse):  app = tenants + guests,  admin = admin actions,
+ *  logins = admin sign-ins only.
+ */
+const SCOPE_SQL = {
+    app: "al.actor_type IN ('tenant','guest')",
+    admin: "al.actor_type = 'admin' AND NOT (al.module = 'auth' AND al.action IN ('login','login_failed'))",
+    logins: "al.actor_type = 'admin' AND al.module = 'auth' AND al.action IN ('login','login_failed')"
+};
+
+const remove = async ({ scope = "app", ids = null, filters = null, olderThanDays = null } = {}) => {
+    const scopeSql = SCOPE_SQL[scope];
+    if (!scopeSql) throw new Error("Unknown delete scope.");
+    let where = [scopeSql];
+    const params = [];
+    if (Array.isArray(ids) && ids.length) {
+        const clean = ids.map(Number).filter(n => Number.isInteger(n) && n > 0);
+        if (!clean.length) return 0;
+        where.push(`al.id IN (${clean.map(() => "?").join(",")})`);
+        params.push(...clean);
+    } else {
+        const f = filters || {};
+        if (f.tenant_id) { where.push("al.tenant_id = ?"); params.push(Number(f.tenant_id)); }
+        if (f.guest_id) { where.push("al.guest_id = ?"); params.push(Number(f.guest_id)); }
+        if (f.pg_id) { where.push("al.pg_id = ?"); params.push(Number(f.pg_id)); }
+        if (f.module) { where.push("al.module = ?"); params.push(String(f.module)); }
+        if (f.action) { where.push("al.action = ?"); params.push(String(f.action)); }
+        if (f.from) { where.push("al.created_at >= ?"); params.push(`${f.from} 00:00:00`); }
+        if (f.to) { where.push("al.created_at <= ?"); params.push(`${f.to} 23:59:59`); }
+        const days = Number(olderThanDays);
+        if (Number.isFinite(days) && days > 0) { where.push("al.created_at < DATE_SUB(NOW(), INTERVAL ? DAY)"); params.push(Math.floor(days)); }
+    }
+    const [res] = await db.execute(`DELETE al FROM activity_logs al WHERE ${where.join(" AND ")}`, params);
+    return res.affectedRows || 0;
+};
+
+module.exports = {
+    remove, create, list, count, getStats };
