@@ -65,9 +65,12 @@ const post = async (url, fields) => {
 
     let res;
     try {
-        res = await axios.post(url, form, { timeout: 20000, responseType: "text", transformResponse: (r) => r, validateStatus: () => true });
+        res = await axios.post(url, form, { timeout: Number(process.env.BIGTOS_TIMEOUT_MS) || 30000, headers: { "User-Agent": process.env.BIGTOS_USER_AGENT || "Mozilla/5.0 (compatible; LivinkeyServer/1.0)", Accept: "*/*" }, responseType: "text", transformResponse: (r) => r, validateStatus: () => true });
     } catch (err) {
-        throw Object.assign(new Error(`Bigtos request failed: ${err.code || err.message}`), { code: err.code || "BIGTOS_NETWORK" });
+        const timedOut = err.code === "ECONNABORTED" || err.code === "ETIMEDOUT";
+        throw Object.assign(new Error(timedOut
+            ? `Bigtos did not answer within ${Number(process.env.BIGTOS_TIMEOUT_MS) || 30000} ms (${err.code}). The message may or may not have been sent - check the Bigtos history.`
+            : `Bigtos request failed: ${err.code || err.message}`), { code: err.code || "BIGTOS_NETWORK" });
     }
 
     let body = res.data;
