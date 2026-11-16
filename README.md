@@ -10,7 +10,7 @@ Node.js / Express API that powers the **Livinkey admin console** and the **Livin
 | Database | MySQL (`mysql2` connection pool) |
 | Auth | JWT (admins and tenants have separate middleware), bcrypt |
 | Files | Cloudinary (documents, proofs, meter photos, QR codes) |
-| Messaging | Twilio WhatsApp → SMS → e-mail delivery chain, Nodemailer |
+| Messaging | Bigtos WhatsApp → SMS → e-mail delivery chain, Nodemailer |
 | Push notifications | Firebase Cloud Messaging (`firebase-admin`) |
 | Scheduling | `node-cron` (reminders, fines, expiry checks) |
 
@@ -35,7 +35,7 @@ All settings come from environment variables. `.env.example` lists every key wit
 - **Cloudinary** – `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
 - **Push** – `ENABLE_PUSH_NOTIFICATIONS`, `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_JSON`
 - **Payments / UPI** – `MERCHANT_UPI_ID`, `MERCHANT_NAME`, optional gateway keys
-- **Messaging** – Twilio keys and template SIDs, see [docs/TWILIO_SETUP.md](docs/TWILIO_SETUP.md)
+- **Messaging** – Bigtos API key and template names, see [docs/BIGTOS_SETUP.md](docs/BIGTOS_SETUP.md)
 - **Time zone** – `APP_TIMEZONE` (optional, default `Asia/Kolkata`) used for receipt timestamps
 
 > Keep `.env` and any `firebase-service-account.json` out of version control and out of shared archives. Rotate a secret immediately if it has ever been shared.
@@ -57,7 +57,7 @@ Do not import `src/db.sql` into a live database – it is a reference snapshot c
 ```
 backend/
 ├── scripts/migrate.js        # schema migration runner
-├── docs/TWILIO_SETUP.md      # messaging provider setup
+├── docs/BIGTOS_SETUP.md      # messaging provider setup
 └── src/
     ├── server.js / app.js    # bootstrap, middleware, route mounting
     ├── config/               # db, cloudinary, schema bootstrap

@@ -1,17 +1,14 @@
 /**
- * Webhook Routes (Twilio)
- * Public endpoints, authenticated by the Twilio request signature
+ * Webhook Routes (Bigtos)
+ * Public endpoints, authenticated by the shared secret in the URL (see middleware/bigtos.webhook.js)
  */
 
 const express = require("express");
 const router = express.Router();
-const verifyTwilio = require("../middleware/twilio.signature");
+const verifyBigtos = require("../middleware/bigtos.webhook");
 const webhookController = require("../controllers/whatsapp.webhook.controller");
 
 // Incoming WhatsApp messages
-router.post("/twilio/whatsapp", verifyTwilio, webhookController.handleIncomingMessage);
-
-// Delivery status callbacks
-router.post("/twilio/status", verifyTwilio, webhookController.handleStatusCallback);
+router.post("/bigtos/whatsapp", verifyBigtos, webhookController.handleIncomingMessage);
 
 module.exports = router;

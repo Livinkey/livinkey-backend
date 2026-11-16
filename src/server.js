@@ -22,8 +22,11 @@ function checkConfiguration() {
     if (!process.env.MERCHANT_UPI_ID || /your_|merchant@upi/i.test(process.env.MERCHANT_UPI_ID)) {
         warn("MERCHANT_UPI_ID is not set to a real UPI ID – UPI payments will not reach you.");
     }
-    if (!process.env.TWILIO_AUTH_TOKEN || /^your/i.test(process.env.TWILIO_AUTH_TOKEN)) {
-        warn("TWILIO_AUTH_TOKEN is not configured – WhatsApp webhooks will be rejected.");
+    if (!process.env.BIGTOS_API_KEY || /^(your|paste|enter)/i.test(process.env.BIGTOS_API_KEY)) {
+        warn("BIGTOS_API_KEY is not configured – WhatsApp/SMS messages cannot be sent.");
+    }
+    if (process.env.BIGTOS_VALIDATE_WEBHOOK !== "false" && !process.env.BIGTOS_WEBHOOK_SECRET) {
+        warn("BIGTOS_WEBHOOK_SECRET is not set – incoming WhatsApp webhooks will be rejected.");
     }
     if (process.env.CASHFREE_APP_ID && !process.env.CASHFREE_SECRET_KEY) {
         warn("Cashfree is partly configured.");

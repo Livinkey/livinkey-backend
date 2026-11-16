@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS `messages` (
   `content` TEXT NULL,
   `media_url` VARCHAR(500) NULL,
   `status` ENUM('queued', 'sent', 'delivered', 'read', 'failed', 'received') NOT NULL DEFAULT 'queued',
-  `external_id` VARCHAR(100) NULL COMMENT 'Twilio Message SID',
+  `external_id` VARCHAR(100) NULL COMMENT 'Provider message id (Bigtos)',
   `metadata` JSON NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -5,11 +5,11 @@
  *   WhatsApp  ->  (failed?)  SMS  ->  (failed?)  e-mail
  *
  * "Failed" is detected in two ways:
- *   1. Twilio rejects the request straight away (bad number, sender/template misconfigured,
- *      account problem ...)                                    -> next channel is tried immediately.
- *   2. Twilio accepts the request but the message later fails (recipient is not on WhatsApp,
- *      24-hour window closed, template not approved, SMS blocked ...). That is only known when
- *      Twilio calls our status webhook -> processStatusCallback() sends it on the next channel.
+ *   1. Bigtos rejects the request straight away (bad number, invalid key, no credit, template
+ *      misconfigured ...)                                      -> next channel is tried immediately.
+ *   2. (Only if the provider ever posts delivery receipts) a late failure arrives through
+ *      processStatusCallback() and is sent on the next channel. Bigtos does not send receipts today,
+ *      so nothing is parked for a later fallback and accepted messages are recorded as "sent".
  *
  * The text for each channel comes from messaging.templates.js so the wording is identical
  * everywhere. Secrets (OTPs) are never written to the database in plain text: the conversation
@@ -23,7 +23,7 @@ const Delivery = require("../models/message.delivery.model");
 const { compose } = require("./messaging.templates");
 const { sendWhatsApp } = require("./whatsapp.service");
 const { sendSms } = require("./sms.service");
-const twilioClient = require("./twilio.client");
+const bigtos = require("./bigtos.client");
 const mailService = require("./mail.service");
 const { resolveContact } = require("./contacts.service");
 const { normalizePhone, maskPhone, digitsOnly } = require("../utils/phone");
@@ -66,7 +66,7 @@ const isDuplicateSend = (key) => {
     return false;
 };
 
-const mapTwilioStatus = (s) => {
+const mapProviderStatus = (s) => {
     const v = String(s || "").toLowerCase();
     if (["failed", "undelivered", "canceled"].includes(v)) return "failed";
     if (v === "read") return "read";
@@ -96,8 +96,8 @@ const buildChain = ({ e164, email, preference, skipEmail }) => {
     const order = configuredOrder();
     const chain = [];
     for (const ch of order) {
-        if (ch === "whatsapp" && preference !== "email" && e164 && twilioClient.isWhatsAppConfigured()) chain.push(ch);
-        if (ch === "sms" && preference !== "email" && e164 && twilioClient.isSmsConfigured()) chain.push(ch);
+        if (ch === "whatsapp" && preference !== "email" && e164 && bigtos.isWhatsAppConfigured()) chain.push(ch);
+        if (ch === "sms" && preference !== "email" && e164 && bigtos.isSmsConfigured()) chain.push(ch);
         if (ch === "email" && email && !skipEmail) chain.push(ch);
     }
     return chain;
@@ -148,9 +148,11 @@ const runChain = async ({ chain, payload, attempts = [], richEmail = null }) => 
             const r = await executeStep(channel, payload, richEmail);
             attempts.push({ channel, ok: true, sid: r?.sid || null, mode: r?.mode || null, at: iso() });
             if (channel === "email") return { ok: true, channel, status: "sent", sid: null, pending: [], attempts };
-            return { ok: true, channel, status: mapTwilioStatus(r.status), sid: r.sid, pending: chain.slice(i + 1), attempts };
+            // Bigtos has no delivery receipts, so there is nobody to resume the chain later: park nothing.
+            const pending = bigtos.HAS_STATUS_CALLBACKS ? chain.slice(i + 1) : [];
+            return { ok: true, channel, status: mapProviderStatus(r.status), sid: r.sid, pending, attempts };
         } catch (err) {
-            const d = twilioClient.describeError(err);
+            const d = bigtos.describeError(err);
             attempts.push({ channel, ok: false, error: d.message, code: d.code || null, at: iso() });
             console.error(`[messaging] ${LABEL[channel]} failed${payload.tag ? ` (${payload.tag})` : ""}:`, d.code ? `${d.code} ` : "", d.message);
         }
@@ -304,7 +306,7 @@ const sendMessage = async ({
 
     if (!chain.length) {
         const why = !rcpt.e164 && !rcpt.email ? "no valid phone number or e-mail on file"
-            : skipEmail && !twilioClient.isWhatsAppConfigured() && !twilioClient.isSmsConfigured() ? "WhatsApp/SMS are not configured"
+            : skipEmail && !bigtos.isWhatsAppConfigured() && !bigtos.isSmsConfigured() ? "WhatsApp/SMS are not configured"
             : "no usable channel";
         if (messageId) await Message.update(messageId, { status: "failed", metadata: { ...metadata, type, error: why } }).catch(() => {});
         throw new Error(`Message not sent: ${why}.`);
@@ -335,7 +337,7 @@ const sendToNumber = async ({ phone, countryCode = null, name = null, type = "cu
     if (!e164) throw Object.assign(new Error("That phone number is not valid."), { status: 400 });
     const composed = compose(type, data, { name: name || "there" });
     const chain = buildChain({ e164, email: null, preference: "auto", skipEmail: true });
-    if (!chain.length) throw Object.assign(new Error("WhatsApp and SMS are not configured on the server (Twilio settings missing)."), { status: 503 });
+    if (!chain.length) throw Object.assign(new Error("WhatsApp and SMS are not configured on the server (Bigtos settings missing: BIGTOS_API_KEY)."), { status: 503 });
 
     const payload = { tag: `${type}->${maskPhone(e164)}`, type, name: name || "there", e164, whatsapp: composed.whatsapp, sms: composed.sms, email: composed.email };
     const outcome = await runChain({ chain, payload });
@@ -347,18 +349,18 @@ const sendToNumber = async ({ phone, countryCode = null, name = null, type = "cu
     };
 };
 
-/* ------------------------------------------------ Twilio status webhook logic */
+/* ------------------------------------------------ provider status callback logic (unused by Bigtos) */
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Called for every delivery-status callback Twilio posts.
+ * Called for every delivery-status callback a provider posts (Bigtos does not post any).
  *  - progress (sent / delivered / read) updates the message tick marks;
  *  - failure (failed / undelivered) hands the message to the next channel in the chain.
  */
 const processStatusCallback = async ({ sid, status, errorCode = null, errorMessage = null }) => {
     if (!sid) return { handled: false };
-    const mapped = mapTwilioStatus(status);
+    const mapped = mapProviderStatus(status);
 
     // The callback can (rarely) beat our own database insert – give it a moment.
     let d = await Delivery.findByExternalId(sid);
@@ -394,7 +396,7 @@ const processStatusCallback = async ({ sid, status, errorCode = null, errorMessa
 
     let attempts = [];
     try { attempts = JSON.parse(d.attempts || "[]"); } catch { attempts = []; }
-    attempts.push({ channel: d.channel, ok: false, async: true, error: errorMessage || `Twilio status: ${status}`, code: errorCode ? String(errorCode) : null, at: iso() });
+    attempts.push({ channel: d.channel, ok: false, async: true, error: errorMessage || `Provider status: ${status}`, code: errorCode ? String(errorCode) : null, at: iso() });
     console.error(`[messaging] ${LABEL[d.channel] || d.channel} delivery failed (${errorCode || status}) – falling back`, d.message_id ? `message ${d.message_id}` : `forward ${d.forward_id}`);
 
     const sealed = secretBox.open(d.pending_chain);
@@ -444,5 +446,5 @@ module.exports = {
     normalizePhone,
     userTypeOf,
     // exported for tests
-    _internals: { buildChain, runChain, mapTwilioStatus, configuredOrder },
+    _internals: { buildChain, runChain, mapProviderStatus, configuredOrder },
 };

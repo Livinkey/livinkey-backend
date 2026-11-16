@@ -138,8 +138,9 @@ exports.unreadCount = async (req, res) => {
 
 /**
  * GET /api/conversations/:id/messages/:messageId/media
- * Twilio media links need our Twilio login, so the browser cannot open them directly. We fetch the
- * file server-side (only from twilio.com) and stream it to the signed-in admin.
+ * Inbound attachment links come from Bigtos / WhatsApp servers. We fetch the file server-side (only from an
+ * allow-listed host: *.bigtos.com, *.whatsapp.net, *.whatsapp.com or BIGTOS_MEDIA_HOSTS) and stream it to the
+ * signed-in admin, so the browser never contacts a third party directly.
  */
 exports.getMessageMedia = async (req, res) => {
     try {
@@ -147,14 +148,13 @@ exports.getMessageMedia = async (req, res) => {
         if (!msg || String(msg.conversation_id) !== String(req.params.id) || !msg.media_url) {
             return res.status(404).json({ success: false, message: "Attachment not found" });
         }
-        let host = "";
-        try { host = new URL(msg.media_url).hostname; } catch { /* invalid */ }
-        if (!/(^|\.)twilio\.com$/i.test(host)) return res.status(400).json({ success: false, message: "Unsupported attachment" });
+        let host = "", proto = "";
+        try { const u = new URL(msg.media_url); host = u.hostname.toLowerCase(); proto = u.protocol; } catch { /* invalid */ }
+        const extra = String(process.env.BIGTOS_MEDIA_HOSTS || "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+        const allowed = /(^|\.)(bigtos\.com|whatsapp\.net|whatsapp\.com)$/i.test(host) || extra.some((h) => host === h || host.endsWith("." + h));
+        if (proto !== "https:" || !allowed) return res.status(400).json({ success: false, message: "Unsupported attachment" });
 
-        const sid = process.env.TWILIO_ACCOUNT_SID, token = process.env.TWILIO_AUTH_TOKEN;
-        if (!sid || !token) return res.status(503).json({ success: false, message: "Twilio is not configured" });
-
-        const upstream = await axios.get(msg.media_url, { auth: { username: sid, password: token }, responseType: "stream", timeout: 20000, maxContentLength: 25 * 1024 * 1024 });
+        const upstream = await axios.get(msg.media_url, { maxRedirects: 0, responseType: "stream", timeout: 20000, maxContentLength: 25 * 1024 * 1024 });
         const type = String(upstream.headers["content-type"] || Message.parseMetadata(msg.metadata).mediaType || "application/octet-stream");
         // inline only for safe types; everything else downloads
         const inline = /^(image\/(png|jpe?g|gif|webp)|application\/pdf)$/i.test(type);

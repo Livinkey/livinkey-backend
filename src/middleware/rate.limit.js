@@ -36,7 +36,7 @@ const publicLimiter = make({
     message: "Too many requests. Please slow down a little."
 });
 
-// Payment gateway & Twilio webhooks
+// Payment gateway & Bigtos webhooks
 const webhookLimiter = make({
     windowMs: 60 * 1000,
     limit: 120,

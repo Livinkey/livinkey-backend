@@ -2,7 +2,7 @@
 ## Integration Guide (Production Ready)
 
 This module adds:
-- WhatsApp as **primary** messaging channel (via Twilio)
+- WhatsApp as **primary** messaging channel (via Bigtos)
 - Email as **automatic fallback**
 - Full **Conversation Management** (inbox + reply)
 
@@ -11,7 +11,6 @@ This module adds:
 ## 1. Install Dependency
 
 ```bash
-npm install twilio
 ```
 
 ---
@@ -57,9 +56,8 @@ Or execute the SQL manually in your database tool.
 Copy `.env.example` values into your main `.env` and fill them:
 
 ```env
-TWILIO_ACCOUNT_SID=ACxxxx
-TWILIO_AUTH_TOKEN=xxxx
-TWILIO_WHATSAPP_FROM=whatsapp:+91xxxxxxxxxx
+BIGTOS_API_KEY=xxxx
+BIGTOS_WEBHOOK_SECRET=long-random-string
 ```
 
 (See full comments inside `.env.example`)
@@ -78,15 +76,13 @@ TWILIO_WHATSAPP_FROM=whatsapp:+91xxxxxxxxxx
 
 ---
 
-## 6. Configure Twilio Webhooks
+## 6. Configure the Bigtos webhook
 
-In Twilio Console → WhatsApp Senders → your number:
+In the Bigtos panel set the incoming-message URL:
 
-**When a message comes in**  
-`https://your-domain.com/api/webhooks/twilio/whatsapp`
+`https://your-domain.com/api/webhooks/bigtos/whatsapp?token=<BIGTOS_WEBHOOK_SECRET>`
 
-**Status callback URL**  
-`https://your-domain.com/api/webhooks/twilio/status`
+(Bigtos has no delivery-status callback.)
 
 ---
 
@@ -140,9 +136,9 @@ await messagingService.sendCustom(tenant, "Important Notice", "Please submit you
 
 ---
 
-## 9. Recommended Template Setup (Twilio)
+## 9. Recommended Template Setup (Bigtos)
 
-Create these Content Templates in Twilio (Utility / Authentication category):
+Create these templates in Bigtos/Meta (Utility / Authentication category) and set their names in `BIGTOS_*_TEMPLATE`:
 
 1. **OTP Template**
 2. **Bill Notification**
@@ -168,7 +164,7 @@ Then put the Content SIDs in `.env`.
 - Always keep Email as fallback.
 - Users without phone number will only receive Email.
 - For production, use approved Content Templates (required outside 24-hour window).
-- Monitor Twilio logs for failed messages.
+- Check the Bigtos history API/panel for failed messages.
 
 ---
 

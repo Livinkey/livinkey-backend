@@ -1,10 +1,13 @@
 /**
- * SMS (Twilio Programmable Messaging) – the second step of the delivery chain.
+ * SMS (Bigtos) – the second step of the delivery chain.
+ *
+ * Bigtos' WhatsApp docs have no SMS endpoint. The step is active only when BIGTOS_SMS_ENDPOINT is set to the
+ * URL of your Bigtos SMS API (same fields as sendmessage: key, mobileno, msg, type=Text); otherwise it is skipped.
  *
  * SMS bodies are kept to the GSM-7 alphabet on purpose: one emoji or "₹" turns a message into
  * UCS-2 (70 chars/segment instead of 160) and triples the cost. Currency is written "Rs.".
  */
-const { getClient, config, statusCallbackUrl } = require("./twilio.client");
+const { post, smsEndpoint, toBigtosNumber } = require("./bigtos.client");
 
 const MAX_SMS_CHARS = 600; // ~4 segments
 
@@ -28,18 +31,11 @@ const toSmsText = (text) => {
 };
 
 const sendSms = async (to, body) => {
-    const client = getClient();
-    if (!client) throw new Error("Twilio is not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN).");
-    const cfg = config();
-    if (!cfg.smsFrom && !cfg.smsMessagingService) {
-        throw new Error("SMS sender not configured (set TWILIO_SMS_FROM or TWILIO_MESSAGING_SERVICE_SID).");
-    }
-    const payload = { to, body: toSmsText(body), statusCallback: statusCallbackUrl() };
-    if (cfg.smsMessagingService) payload.messagingServiceSid = cfg.smsMessagingService;
-    else payload.from = cfg.smsFrom;
-
-    const m = await client.messages.create(payload);
-    return { sid: m.sid, status: m.status, to: m.to, from: m.from };
+    const url = smsEndpoint();
+    if (!url) throw new Error("SMS endpoint not configured (set BIGTOS_SMS_ENDPOINT).");
+    const mobileno = toBigtosNumber(to);
+    const r = await post(url, { mobileno, msg: toSmsText(body), type: "Text" });
+    return { sid: r.id, status: "sent", to: mobileno };
 };
 
 module.exports = { sendSms, toSmsText };

@@ -1,5 +1,5 @@
 /**
- * Phone helpers – every number that reaches Twilio goes through here.
+ * Phone helpers – every number that reaches the messaging provider goes through here.
  *
  * Livinkey stores tenant/guest numbers as TWO columns: `country_code` ("+91", "+255", "91"…)
  * and `phone` (the local number, usually without the code). Treating a 10-digit local number

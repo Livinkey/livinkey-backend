@@ -54,7 +54,7 @@ const update = async (id, d) => {
 
 /**
  * Atomically "claim" the right to run the next fallback step for this delivery, so two
- * duplicate Twilio callbacks can never trigger two SMS/e-mails. Returns true for exactly one caller.
+ * duplicate provider callbacks can never trigger two SMS/e-mails. Returns true for exactly one caller.
  */
 const claimFallback = async (id, expectedSid) => {
     const [r] = await db.execute(

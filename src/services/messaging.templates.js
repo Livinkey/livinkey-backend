@@ -10,9 +10,8 @@
  *   }
  *
  * WhatsApp business-initiated messages must use an approved template. When the matching
- * TWILIO_*_CONTENT_SID is set the template is used; otherwise the free-form `text` is sent
- * (that only works inside WhatsApp's 24-hour window – outside it Twilio rejects it and the
- * delivery chain automatically falls through to SMS and then e-mail).
+ * BIGTOS_*_TEMPLATE name is set the template is used; otherwise the free-form `text` is sent
+ * (that only works inside WhatsApp's 24-hour window – outside it WhatsApp will not deliver it).
  */
 
 const BRAND = "Livinkey";
@@ -38,7 +37,7 @@ const clip = (s, n) => {
     return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
 };
 
-/** Twilio/Meta rules for template variables: no newlines or tabs, no 4+ spaces, never empty. */
+/** Meta rules for template variables: no newlines or tabs, no 4+ spaces, never empty. */
 const tplVar = (v, max = 900) => {
     let s = String(v ?? "")
         .replace(/\r?\n+/g, " | ")
@@ -57,11 +56,11 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
             const purpose = data.purpose || "Login";
             const minutes = data.validMinutes || 5;
             const vars = { 1: tplVar(data.otp) };
-            if (String(process.env.TWILIO_OTP_PURPOSE_VAR || "").toLowerCase() === "true") vars[2] = tplVar(purpose);
+            if (String(process.env.BIGTOS_OTP_PURPOSE_VAR || "").toLowerCase() === "true") vars[2] = tplVar(purpose);
             return {
                 whatsapp: {
                     text: `*${BRAND}* · ${purpose} verification\n\nYour one-time code is *${data.otp}*.\nIt is valid for ${minutes} minutes.\n\nFor your security, never share this code with anyone. ${BRAND} staff will never ask for it.`,
-                    template: { envKey: "TWILIO_OTP_CONTENT_SID", variables: vars },
+                    template: { envKey: "BIGTOS_OTP_TEMPLATE", variables: vars },
                 },
                 sms: `${BRAND}: ${data.otp} is your verification code for ${purpose}. Valid for ${minutes} minutes. Do not share it with anyone.`,
                 email: { title: `${purpose} verification code`, text: `Your one-time code is ${data.otp}. It is valid for ${minutes} minutes.` },
@@ -77,7 +76,7 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
             return {
                 whatsapp: {
                     text: `*New bill · ${BRAND}*\n\nHello ${hi}, your bill${month} is ready.\n\n• Amount due: *${amount}*\n${due ? `• Due date: *${due}*\n` : ""}${ref ? `• Bill ref: ${ref}\n` : ""}\nOpen the ${BRAND} app to see the full breakdown and pay securely.`,
-                    template: { envKey: "TWILIO_BILL_CONTENT_SID", variables: { 1: tplVar(name), 2: tplVar(amount), 3: tplVar(due || "-"), 4: tplVar(ref || "-") } },
+                    template: { envKey: "BIGTOS_BILL_TEMPLATE", variables: { 1: tplVar(name), 2: tplVar(amount), 3: tplVar(due || "-"), 4: tplVar(ref || "-") } },
                 },
                 sms: `${BRAND}: Hello ${hi}, your bill${month} of ${amount} is ready${due ? `, due ${due}` : ""}${ref ? ` (Ref ${ref})` : ""}. Open the ${BRAND} app to pay.`,
                 email: { title: "Your new bill", text: `Your bill${month} of ${amount} is ready${due ? ` and due on ${due}` : ""}. Open the ${BRAND} app to see the breakdown and pay.` },
@@ -91,7 +90,7 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
             return {
                 whatsapp: {
                     text: `*Late fee applied · ${BRAND}*\n\nHello ${hi}, a late fee of *${amount}* has been added to your bill.\n\n• Reason: ${reason}\n\nPlease clear your dues in the ${BRAND} app to avoid further charges.`,
-                    template: { envKey: "TWILIO_FINE_CONTENT_SID", variables: { 1: tplVar(name), 2: tplVar(amount), 3: tplVar(reason) } },
+                    template: { envKey: "BIGTOS_FINE_TEMPLATE", variables: { 1: tplVar(name), 2: tplVar(amount), 3: tplVar(reason) } },
                 },
                 sms: `${BRAND}: Hello ${hi}, a late fee of ${amount} was added to your bill. ${clip(reason, 120)}. Please pay via the ${BRAND} app.`,
                 email: { title: "Late fee applied", text: `A late fee of ${amount} has been added to your bill. ${reason}` },
@@ -105,7 +104,7 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
             return {
                 whatsapp: {
                     text: `*e-FRRO reminder · ${BRAND}*\n\nHello ${hi}, your e-FRRO registration ${when}.\n\nPlease renew it as soon as possible to stay compliant. Contact the ${BRAND} team if you need help.`,
-                    template: { envKey: "TWILIO_EFRRO_CONTENT_SID", variables: { 1: tplVar(name), 2: tplVar(days) } },
+                    template: { envKey: "BIGTOS_EFRRO_TEMPLATE", variables: { 1: tplVar(name), 2: tplVar(days) } },
                 },
                 sms: `${BRAND}: Hello ${hi}, your e-FRRO ${when}. Please renew it soon. Contact ${BRAND} if you need help.`,
                 email: { title: "e-FRRO reminder", text: `Your e-FRRO registration ${when}. Please renew it as soon as possible.` },
@@ -153,7 +152,7 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
                 whatsapp: {
                     text: lines.join("\n"),
                     template: {
-                        envKey: "TWILIO_MAINTENANCE_CONTENT_SID",
+                        envKey: "BIGTOS_MAINTENANCE_TEMPLATE",
                         variables: { 1: tplVar(d.recipientName || "Team"), 2: tplVar(`#${d.id} ${d.issueType}`), 3: tplVar(location), 4: tplVar(details) },
                     },
                 },
@@ -171,7 +170,7 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
             return {
                 whatsapp: {
                     text: `*${title}*\n\n${body}\n\n— ${BRAND}`,
-                    template: { envKey: "TWILIO_CUSTOM_CONTENT_SID", variables: { 1: tplVar(title, 200), 2: tplVar(body) } },
+                    template: { envKey: "BIGTOS_CUSTOM_TEMPLATE", variables: { 1: tplVar(title, 200), 2: tplVar(body) } },
                 },
                 sms: `${BRAND}: ${title}. ${body}`,
                 email: { title, text: body },

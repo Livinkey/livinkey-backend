@@ -1,9 +1,10 @@
 /**
- * Twilio webhooks
- *   POST /api/webhooks/twilio/whatsapp  – a person wrote to our WhatsApp number
- *   POST /api/webhooks/twilio/status    – delivery receipts for every message we sent (WhatsApp + SMS)
+ * Bigtos webhook
+ *   POST /api/webhooks/bigtos/whatsapp?token=...  – a person wrote to our WhatsApp number
  *
- * Both always answer 200 (Twilio retries aggressively on anything else); errors are logged.
+ * Bigtos posts  body / from / to  and a JSON "data" blob (see their "Incoming Messages" docs).
+ * Always answers 200 (providers retry on anything else); errors are logged.
+ * Bigtos has no delivery-receipt webhook, so there is no status endpoint.
  */
 
 const Conversation = require("../models/conversation.model");
@@ -12,7 +13,41 @@ const messagingService = require("../services/messaging.service");
 const { findUserByE164 } = require("../services/contacts.service");
 const { normalizePhone, digitsOnly } = require("../utils/phone");
 
-const stripChannel = (v) => String(v || "").replace(/^whatsapp:/i, "").trim();
+const crypto = require("crypto");
+
+/** "919950448844@c.us" -> "+919950448844" (Bigtos always includes the country code) */
+const jidToE164 = (v) => {
+    const d = digitsOnly(String(v || "").split("@")[0]);
+    return d ? normalizePhone("+" + d) : null;
+};
+
+const parseJson = (v) => {
+    if (v && typeof v === "object") return v;
+    if (typeof v !== "string") return null;
+    try { return JSON.parse(v); } catch { return null; }
+};
+
+/** Normalise the different shapes Bigtos may post into one flat object. */
+const readIncoming = (reqBody) => {
+    const b = reqBody || {};
+    const outer = parseJson(b.data) || {};
+    const m = (outer.data && typeof outer.data === "object" ? outer.data : null) || outer || {};
+    const sender = m.sender && typeof m.sender === "object" ? m.sender : {};
+    const from = b.from || m.from || m.chatid || "";
+    const body = b.body ?? m.body ?? "";
+    const type = String(m.type || b.type || "chat").toLowerCase();
+    const media = m.mediaUrl || m.media_url || m.file || m.fileUrl || b.mediaUrl || b.file || null;
+    const t = m.t || outer.ts || b.t || "";
+    const id = m.id || b.id || b.messageId || crypto.createHash("sha1").update(`${from}|${t}|${body}`).digest("hex");
+    return {
+        id: String(id).slice(0, 100),
+        from, to: b.to || m.to || "", body, type, media,
+        name: m.notifyName || sender.pushname || sender.name || sender.formattedName || b.name || null,
+        fromMe: m.fromme === true || m.fromMe === true || String(m.self || "").toLowerCase() === "out",
+        isGroup: /@g\.us$/i.test(String(from)),
+        raw: m,
+    };
+};
 
 /**
  * Find the conversation a phone number belongs to – creating it when needed.
@@ -52,29 +87,32 @@ const findOrCreateConversation = async (e164, profileName) => {
     }
 };
 
-/** POST /api/webhooks/twilio/whatsapp */
+/** POST /api/webhooks/bigtos/whatsapp */
 exports.handleIncomingMessage = async (req, res) => {
     try {
-        const { From, To, Body, MessageSid, NumMedia, MediaUrl0, MediaContentType0, ProfileName } = req.body || {};
-        const e164 = normalizePhone(stripChannel(From));
+        const inc = readIncoming(req.body);
+        // ignore our own outgoing messages echoed back, and group chats
+        if (inc.fromMe || inc.isGroup) return res.status(200).send("OK");
+        const e164 = jidToE164(inc.from);
         if (!e164) return res.status(200).send("OK");
 
-        // Twilio may deliver the same webhook twice – never store a message twice.
-        if (MessageSid && (await Message.findOne({ external_id: MessageSid }))) return res.status(200).send("OK");
+        // The same webhook may be delivered twice – never store a message twice.
+        if (await Message.findOne({ external_id: inc.id })) return res.status(200).send("OK");
 
+        const ProfileName = inc.name;
         const conversation = await findOrCreateConversation(e164, ProfileName);
-        const media = Number.parseInt(NumMedia, 10) > 0;
+        const media = !!inc.media || !["chat", "text", ""].includes(inc.type);
 
         await Message.create({
             conversation_id: conversation.id,
             direction: "inbound",
             channel: "whatsapp",
             message_type: media ? "media" : "text",
-            content: Body || "",
-            media_url: MediaUrl0 || null,
+            content: inc.body || "",
+            media_url: inc.media || null,
             status: "received",
-            external_id: MessageSid || null,
-            metadata: { profileName: ProfileName || null, to: stripChannel(To), numMedia: NumMedia || "0", mediaType: MediaContentType0 || null },
+            external_id: inc.id,
+            metadata: { profileName: ProfileName || null, to: digitsOnly(String(inc.to).split("@")[0]) || null, waType: inc.type },
         });
         await Conversation.update(conversation.id, {
             last_message_at: new Date(),
@@ -103,19 +141,4 @@ exports.handleIncomingMessage = async (req, res) => {
     }
     res.status(200).send("OK");
 };
-
-/** POST /api/webhooks/twilio/status */
-exports.handleStatusCallback = async (req, res) => {
-    try {
-        const { MessageSid, SmsSid, MessageStatus, SmsStatus, ErrorCode, ErrorMessage } = req.body || {};
-        await messagingService.processStatusCallback({
-            sid: MessageSid || SmsSid,
-            status: MessageStatus || SmsStatus,
-            errorCode: ErrorCode || null,
-            errorMessage: ErrorMessage || null,
-        });
-    } catch (error) {
-        console.error("Twilio status callback error:", error.message);
-    }
-    res.status(200).send("OK");
-};
+exports._internals = { readIncoming, jidToE164 };
