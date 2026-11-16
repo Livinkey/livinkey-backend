@@ -49,6 +49,56 @@ const readIncoming = (reqBody) => {
     };
 };
 
+/** Text / media out of a Baileys-style `message` object. */
+const unwrapBaileys = (message = {}) => {
+    const m = message.ephemeralMessage?.message || message.viewOnceMessage?.message || message;
+    const kinds = ["imageMessage", "videoMessage", "audioMessage", "documentMessage", "stickerMessage"];
+    const k = kinds.find((x) => m[x]);
+    return {
+        text: m.conversation || m.extendedTextMessage?.text || (k && m[k].caption) || m.buttonsResponseMessage?.selectedDisplayText || m.listResponseMessage?.title || "",
+        mediaKind: k ? k.replace("Message", "") : null,
+        mediaUrl: k ? (m[k].url || m[k].link || null) : null,
+    };
+};
+
+/**
+ * Bigtos can post several shapes; all are turned into the same flat list:
+ *  A) { messages:[ {key:{remoteJid,fromMe,id}, message:{...}, pushName} ], type:"notify" }   (WhatsApp-Web style)
+ *  B) { messages:[ {from, id, type, text:{body}, image:{link}} ], contacts:[{profile:{name}}] }  (Cloud-API style)
+ *  C) { body, from, to, data:"{...}" }                                                            (documented flat/JSON)
+ */
+const readAll = (reqBody) => {
+    const b = reqBody || {};
+    const outer = parseJson(b.data) || {};
+    const list = Array.isArray(b.messages) ? b.messages : Array.isArray(outer.messages) ? outer.messages : Array.isArray(outer.data?.messages) ? outer.data.messages : null;
+    if (!list) return [readIncoming(b)];
+    if (String(b.type || "").toLowerCase() === "append") return []; // history sync, not new messages
+
+    const contactName = (b.contacts || outer.contacts || [])[0]?.profile?.name || null;
+    return list.map((m) => {
+        m = m || {};
+        const key = m.key || {};
+        const jid = String(key.remoteJid || "");
+        // "@lid" ids are privacy aliases, not phone numbers – use the alt field when the provider supplies it
+        const from = /@lid$/i.test(jid) ? (key.remoteJidAlt || key.senderPn || m.senderPn || m.from || "") : (jid || m.from || m.sender || m.chatid || "");
+        const bag = m.message ? unwrapBaileys(m.message) : { text: "", mediaKind: null, mediaUrl: null };
+        const kind = m.type && typeof m.type === "string" ? m.type : null;
+        const typed = kind && m[kind] && typeof m[kind] === "object" ? m[kind] : {};
+        const body = bag.text || m.text?.body || (typeof m.text === "string" ? m.text : "") || m.body || typed.caption || "";
+        const media = bag.mediaUrl || typed.link || typed.url || m.mediaUrl || m.file || null;
+        const t = m.messageTimestamp || m.timestamp || m.t || "";
+        const id = key.id || m.id || crypto.createHash("sha1").update(`${from}|${t}|${body}`).digest("hex");
+        return {
+            id: String(id).slice(0, 100),
+            from, to: b.to || m.to || "", body, media,
+            type: bag.mediaKind || kind || "chat",
+            name: m.pushName || m.notifyName || m.profile?.name || m.name || contactName || null,
+            fromMe: key.fromMe === true || m.fromMe === true || m.from_me === true || String(m.self || "").toLowerCase() === "out",
+            isGroup: /@g\.us$/i.test(jid || String(from)),
+        };
+    });
+};
+
 /**
  * Find the conversation a phone number belongs to – creating it when needed.
  *  1. a Livinkey user owns this number -> that user's conversation
@@ -87,58 +137,65 @@ const findOrCreateConversation = async (e164, profileName) => {
     }
 };
 
+/** Store one inbound message (and send the optional auto-reply). */
+const processOne = async (inc, rawBody) => {
+    // ignore our own outgoing messages echoed back, and group chats
+    if (inc.fromMe || inc.isGroup) { console.log("[bigtos-webhook] ignored (own message or group)"); return; }
+    const e164 = jidToE164(inc.from);
+    if (!e164) { console.warn("[bigtos-webhook] ignored: no usable sender number in", JSON.stringify(inc.from), "| body:", JSON.stringify(rawBody).slice(0, 1500)); return; }
+
+    // The same webhook may be delivered twice – never store a message twice.
+    if (await Message.findOne({ external_id: inc.id })) return;
+
+    const ProfileName = inc.name;
+    const conversation = await findOrCreateConversation(e164, ProfileName);
+    const media = !!inc.media || !["chat", "text", ""].includes(inc.type);
+
+    await Message.create({
+        conversation_id: conversation.id,
+        direction: "inbound",
+        channel: "whatsapp",
+        message_type: media ? "media" : "text",
+        content: inc.body || "",
+        media_url: inc.media || null,
+        status: "received",
+        external_id: inc.id,
+        metadata: { profileName: ProfileName || null, to: digitsOnly(String(inc.to).split("@")[0]) || null, waType: inc.type },
+    });
+    await Conversation.update(conversation.id, {
+        last_message_at: new Date(),
+        unread_count: (conversation.unread_count || 0) + 1,
+        ...(ProfileName && (!conversation.name || conversation.name === conversation.phone) ? { name: ProfileName } : {}),
+    });
+
+    // Optional auto-reply (free-form is allowed: the person just wrote to us, so the 24h window is open)
+    if (process.env.WHATSAPP_AUTO_REPLY === "true") {
+        try {
+            await messagingService.sendMessage({
+                userId: conversation.user_id,
+                userType: conversation.user_type,
+                phone: conversation.phone,
+                name: conversation.name,
+                type: "text",
+                body: process.env.WHATSAPP_AUTO_REPLY_TEXT || "Thank you for your message. Our team will get back to you shortly.",
+                skipEmail: true,
+            });
+        } catch (autoReplyErr) {
+            console.error("Auto-reply failed:", autoReplyErr.message);
+        }
+    }
+};
+
 /** POST /api/webhooks/bigtos/whatsapp */
 exports.handleIncomingMessage = async (req, res) => {
     try {
-        const inc = readIncoming(req.body);
-        // ignore our own outgoing messages echoed back, and group chats
-        if (inc.fromMe || inc.isGroup) { console.log("[bigtos-webhook] ignored (own message or group)"); return res.status(200).send("OK"); }
-        const e164 = jidToE164(inc.from);
-        if (!e164) { console.warn("[bigtos-webhook] ignored: no usable sender number in", JSON.stringify(inc.from)); return res.status(200).send("OK"); }
-
-        // The same webhook may be delivered twice – never store a message twice.
-        if (await Message.findOne({ external_id: inc.id })) return res.status(200).send("OK");
-
-        const ProfileName = inc.name;
-        const conversation = await findOrCreateConversation(e164, ProfileName);
-        const media = !!inc.media || !["chat", "text", ""].includes(inc.type);
-
-        await Message.create({
-            conversation_id: conversation.id,
-            direction: "inbound",
-            channel: "whatsapp",
-            message_type: media ? "media" : "text",
-            content: inc.body || "",
-            media_url: inc.media || null,
-            status: "received",
-            external_id: inc.id,
-            metadata: { profileName: ProfileName || null, to: digitsOnly(String(inc.to).split("@")[0]) || null, waType: inc.type },
-        });
-        await Conversation.update(conversation.id, {
-            last_message_at: new Date(),
-            unread_count: (conversation.unread_count || 0) + 1,
-            ...(ProfileName && (!conversation.name || conversation.name === conversation.phone) ? { name: ProfileName } : {}),
-        });
-
-        // Optional auto-reply (free-form is allowed: the person just wrote to us, so the 24h window is open)
-        if (process.env.WHATSAPP_AUTO_REPLY === "true") {
-            try {
-                await messagingService.sendMessage({
-                    userId: conversation.user_id,
-                    userType: conversation.user_type,
-                    phone: conversation.phone,
-                    name: conversation.name,
-                    type: "text",
-                    body: process.env.WHATSAPP_AUTO_REPLY_TEXT || "Thank you for your message. Our team will get back to you shortly.",
-                    skipEmail: true,
-                });
-            } catch (autoReplyErr) {
-                console.error("Auto-reply failed:", autoReplyErr.message);
-            }
+        for (const inc of readAll(req.body)) {
+            try { await processOne(inc, req.body); }
+            catch (e) { console.error("Incoming WhatsApp message error:", e.message); }
         }
     } catch (error) {
         console.error("Incoming WhatsApp webhook error:", error.message);
     }
     res.status(200).send("OK");
 };
-exports._internals = { readIncoming, jidToE164 };
+exports._internals = { readIncoming, readAll, jidToE164 };
