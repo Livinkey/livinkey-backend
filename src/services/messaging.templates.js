@@ -59,7 +59,7 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
             if (String(process.env.BIGTOS_OTP_PURPOSE_VAR || "").toLowerCase() === "true") vars[2] = tplVar(purpose);
             return {
                 whatsapp: {
-                    text: `*${BRAND}* · ${purpose} verification\n\nYour one-time code is *${data.otp}*.\nIt is valid for ${minutes} minutes.\n\nFor your security, never share this code with anyone. ${BRAND} Management will never ask for it.`,
+                    text: `*${BRAND}* · ${purpose} verification\n\nYour one-time code is *${data.otp}*.\nIt is valid for ${minutes} minutes.\n\nFor your security, never share this code with anyone. ${BRAND} staff will never ask for it.`,
                     template: { envKey: "BIGTOS_OTP_TEMPLATE", variables: vars },
                 },
                 sms: `${BRAND}: ${data.otp} is your verification code for ${purpose}. Valid for ${minutes} minutes. Do not share it with anyone.`,

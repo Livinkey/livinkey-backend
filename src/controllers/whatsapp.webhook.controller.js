@@ -92,9 +92,9 @@ exports.handleIncomingMessage = async (req, res) => {
     try {
         const inc = readIncoming(req.body);
         // ignore our own outgoing messages echoed back, and group chats
-        if (inc.fromMe || inc.isGroup) return res.status(200).send("OK");
+        if (inc.fromMe || inc.isGroup) { console.log("[bigtos-webhook] ignored (own message or group)"); return res.status(200).send("OK"); }
         const e164 = jidToE164(inc.from);
-        if (!e164) return res.status(200).send("OK");
+        if (!e164) { console.warn("[bigtos-webhook] ignored: no usable sender number in", JSON.stringify(inc.from)); return res.status(200).send("OK"); }
 
         // The same webhook may be delivered twice – never store a message twice.
         if (await Message.findOne({ external_id: inc.id })) return res.status(200).send("OK");
