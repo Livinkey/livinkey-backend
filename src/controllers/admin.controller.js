@@ -7,6 +7,8 @@ const Admin = require("../models/admin.model");
 
 const { uploadFile, deleteFile } = require("../services/upload.service");
 const { sendWelcomeAdminEmail } = require("../services/mail.service");
+const messagingService = require("../services/messaging.service");
+const { ADMIN_URL } = require("../utils/links");
 
 exports.createAdmin = async (req, res) => {
 
@@ -111,12 +113,19 @@ exports.createAdmin = async (req, res) => {
 
         });
 
-        // Send welcome email
-        await sendWelcomeAdminEmail(
-            email,
-            name,
-            temporaryPassword
-        );
+        // Login details go to WhatsApp; the e-mail is only used if WhatsApp could not take it.
+        try {
+            await messagingService.sendMessage({
+                userId: adminId, userType: "admin", phone, email, name,
+                type: "custom", sensitive: true, previewText: "Welcome to Livinkey Admin - login details sent",
+                title: "Welcome to Livinkey Admin",
+                body: `Your admin account is ready.\n\nLogin: ${ADMIN_URL}\n• Email: ${email}${phone ? `\n• Phone: ${phone}` : ""}\n• Temporary password: ${temporaryPassword}\n\nYou can sign in with your email or phone number. You will be asked to set a new password the first time. Never share this password.`,
+                link: { url: ADMIN_URL, label: "Admin login" },
+                richEmail: () => sendWelcomeAdminEmail(email, name, temporaryPassword),
+            });
+        } catch (sendErr) {
+            console.error("Admin welcome message failed on every channel:", sendErr.message);
+        }
 
         return res.status(201).json({
 

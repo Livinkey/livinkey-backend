@@ -115,20 +115,21 @@ const sendMessage = async (req,res) => {
             adminName = adminRows[0]?.name || "Livinkey Admin";
         }
 
-        if (person.email) {
+        // WhatsApp first; e-mail only when WhatsApp (and SMS) could not take the message.
+        if (person.phone || person.email) {
             try {
-                try {
-                        await messagingService.sendCustom(
-                            { id: person.id, phone: person.phone, email: person.email, full_name: person.full_name, role: person.role || "tenant" },
-                            subject.trim() || title.trim(),
-                            message.trim(),
-                            { skipEmail: true }
-                        );
-                    } catch (waErr) { console.error("WA activity msg failed:", waErr.message); }
-                    await MailService.sendCustomAdminNotificationEmail(person.email, person.full_name, subject.trim() || title.trim(), message.trim(), adminName);
-                emailSent = 1;
+                const msgTitle = subject.trim() || title.trim();
+                const r = await messagingService.sendMessage({
+                    userId: person.id, userType: person.role === "guest" ? "guest" : "tenant",
+                    phone: person.phone, countryCode: person.country_code || null, email: person.email, name: person.full_name,
+                    type: "custom", title: msgTitle, body: message.trim(),
+                    origin: "admin", adminName,
+                    link: { target: "notifications", params: { title: msgTitle } },
+                    richEmail: () => MailService.sendCustomAdminNotificationEmail(person.email, person.full_name, msgTitle, message.trim(), adminName, { footerNote: "Sent from system · Livinkey admin" }),
+                });
+                emailSent = r.skippedDuplicate ? 0 : 1;
             } catch (e) {
-                console.error("Activity message email failed:", e.message);
+                console.error("Activity message failed on every channel:", e.message);
             }
         }
 

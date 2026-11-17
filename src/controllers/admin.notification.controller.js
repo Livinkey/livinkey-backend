@@ -131,7 +131,7 @@ exports.sendTenantNotification = async (req, res) => {
             const connection = await db.getConnection();
             const [tenants] = await connection.execute(
                 `
-                SELECT id, full_name, email, phone 
+                SELECT id, full_name, email, phone, country_code 
                 FROM tenants 
                 WHERE id IN (${tenantIds.map(() => '?').join(',')})
                 `,
@@ -141,24 +141,20 @@ exports.sendTenantNotification = async (req, res) => {
 
             for (const tenant of tenants) {
                 try {
-                    try {
-                        await messagingService.sendCustom(
-                            { id: tenant.id, phone: tenant.phone, email: tenant.email, full_name: tenant.full_name, role: "tenant" },
-                            title.trim(),
-                            message.trim(),
-                            { skipEmail: true }
-                        );
-                    } catch (waErr) { console.error("WA admin notif failed:", waErr.message); }
-                    await mailService.sendCustomAdminNotificationEmail(
-                        tenant.email,
-                        tenant.full_name,
-                        title.trim(),
-                        message.trim(),
-                        req.admin.name || 'Livinkey Team'
-                    );
-                    emailSentCount++;
-                } catch (emailError) {
-                    console.error(`Failed to send email to ${tenant.email}:`, emailError);
+                    const r = await messagingService.sendMessage({
+                        userId: tenant.id, userType: "tenant", phone: tenant.phone, countryCode: tenant.country_code,
+                        email: tenant.email, name: tenant.full_name,
+                        type: "custom", title: title.trim(), body: message.trim(),
+                        origin: "admin", adminName: req.admin.name || null,
+                        link: { target: "notifications", params: { title: title.trim() } },
+                        richEmail: () => mailService.sendCustomAdminNotificationEmail(
+                            tenant.email, tenant.full_name, title.trim(), message.trim(),
+                            req.admin.name || 'Livinkey Team', { footerNote: "Sent from system · Livinkey admin" }
+                        ),
+                    });
+                    if (!r.skippedDuplicate) emailSentCount++;
+                } catch (sendError) {
+                    console.error(`Failed to deliver message to tenant ${tenant.id} on every channel:`, sendError.message);
                 }
             }
         }

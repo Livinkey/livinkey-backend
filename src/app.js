@@ -123,7 +123,11 @@ app.get("/", (req, res) => {
     });
 });
 
+// Smart links (WhatsApp / SMS / e-mail -> app screen or payment page)
+app.use("/l", require("./routes/links.routes"));
+
 // API Routes
+app.use(require("./utils/identifier").identifierMiddleware);
 app.use("/api/auth", authRoutes);
 app.use("/api/admins", adminRoutes);
 app.use("/api/pgs", pgRoutes);

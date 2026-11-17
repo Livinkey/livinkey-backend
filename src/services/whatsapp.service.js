@@ -49,7 +49,8 @@ const sendWhatsApp = async (to, content) => {
     const mode = payload.__mode;
     delete payload.__mode;
     const r = await post(sendMessageUrl(), payload);
-    return { sid: r.id, status: "sent", to: payload.mobileno, mode };
+    const reply = typeof r.raw === "string" ? r.raw : JSON.stringify(r.raw ?? "");
+    return { sid: r.id, status: "sent", to: payload.mobileno, mode, providerReply: String(reply).slice(0, 200) };
 };
 
 /** Send an image or document by public URL (Bigtos type=Image / File). */

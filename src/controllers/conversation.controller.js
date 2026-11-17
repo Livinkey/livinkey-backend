@@ -88,6 +88,7 @@ exports.replyToConversation = async (req, res) => {
             name: conversation.name,
             type: "text",
             body: text,
+            origin: "admin", adminName: req.admin?.name || null,
             metadata: { replied_by_admin: req.admin?.id || null, replied_by_name: req.admin?.name || null },
         });
 

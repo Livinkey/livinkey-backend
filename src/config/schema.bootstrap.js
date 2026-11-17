@@ -300,6 +300,36 @@ async function ensureSchema() {
             WHERE b.deleted_at IS NULL AND b.current_reading IS NOT NULL
         `).catch(e => console.error("meter readings backfill:", e.message));
 
+
+        // ---- messaging: cross-instance duplicate guard + smart links (WhatsApp / e-mail -> app screen) ----
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS message_dedup (
+                dedup_hash CHAR(64) NOT NULL PRIMARY KEY,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                KEY idx_message_dedup_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `).catch(e => console.error("message_dedup:", e.message));
+
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS short_links (
+                code VARCHAR(16) NOT NULL PRIMARY KEY,
+                user_id INT NULL,
+                user_type VARCHAR(10) NULL,
+                target VARCHAR(40) NOT NULL,
+                params TEXT NULL,
+                redirect_url VARCHAR(1000) NULL,
+                allow_login TINYINT(1) NOT NULL DEFAULT 0,
+                max_uses INT NOT NULL DEFAULT 20,
+                uses INT NOT NULL DEFAULT 0,
+                expires_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                KEY idx_short_links_expires (expires_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `).catch(e => console.error("short_links:", e.message));
+
+        await addColumnIfMissing(conn, "messages", "expires_at", "expires_at DATETIME NULL").catch(() => {});
+        await addColumnIfMissing(conn, "maintenance_requests", "completion_reminder_at", "completion_reminder_at DATETIME NULL").catch(() => {});
+
         console.log("✅ Admin console schema ready");
     } catch (error) {
         console.error("❌ Admin console schema setup failed:", error.message);

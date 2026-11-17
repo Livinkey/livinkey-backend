@@ -586,13 +586,19 @@ const sendMessage = async (req, res) => {
 
         // Device push is sent by guestNotificationService.sendGuestNotification above.
 
-        await sendGuestMessageEmail(
-            tenant.email,
-            tenant.full_name,
-            adminName,
-            message,
-            subject || null
-        );
+        // WhatsApp first; the e-mail is only the fallback.
+        try {
+            await require("../services/messaging.service").sendMessage({
+                userId: tenant.id, userType: "guest", phone: tenant.phone, countryCode: tenant.country_code,
+                email: tenant.email, name: tenant.full_name,
+                type: "custom", title: notifTitle, body: String(message),
+                origin: "admin", adminName,
+                link: { target: "notifications", params: { title: notifTitle } },
+                richEmail: () => sendGuestMessageEmail(tenant.email, tenant.full_name, adminName, message, subject || null),
+            });
+        } catch (sendErr) {
+            console.error("Guest message failed on every channel:", sendErr.message);
+        }
 
         // Log for admin history
         try {

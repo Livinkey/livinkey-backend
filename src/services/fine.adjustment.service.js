@@ -167,28 +167,18 @@ const adjustFine = async (billId, adminId, adjustmentData) => {
                 0
             );
 
-            // WhatsApp (best effort). skipEmail: the dedicated "Late Fee Adjusted"
-            // email below is the one tenants should get - never a second, generic one.
+            // WhatsApp first; the dedicated "Late Fee Adjusted" e-mail only if WhatsApp could not take it.
+            // Independent try so a messaging failure can never block push / in-app alerts.
             try {
-                await messagingService.sendCustom(
-                    { id: bill.tenant_id, phone: bill.tenant_phone, email: bill.tenant_email, full_name: bill.tenant_name, role: "tenant" },
-                    "Late Fee Adjusted",
-                    `Your late fee has been reduced from ₹${currentFine.toFixed(2)} to ₹${newFine.toFixed(2)}.\nNew total due: ₹${newTotalDue.toFixed(2)}.\nReason: ${adjustmentData.reason.trim()}`,
-                    { skipEmail: true }
-                );
-            } catch (waErr) { console.error("WhatsApp fine adjust failed:", waErr.message); }
-
-            // Email: independent try so a mail failure can never block push / in-app alerts.
-            try {
-                await sendFineAdjustedEmail(
-                    bill.tenant_email,
-                    bill.tenant_name,
-                    updatedBill,
-                    currentFine,
-                    newFine,
-                    adjustmentData.reason.trim()
-                );
-            } catch (mailErr) { console.error("Fine adjusted email failed:", mailErr.message); }
+                await messagingService.sendMessage({
+                    userId: bill.tenant_id, userType: "tenant", phone: bill.tenant_phone, email: bill.tenant_email, name: bill.tenant_name,
+                    type: "custom", title: "Late fee adjusted",
+                    body: `Your late fee has been reduced from ₹${currentFine.toFixed(2)} to ₹${newFine.toFixed(2)}.\nNew total due: ₹${newTotalDue.toFixed(2)}.\nReason: ${adjustmentData.reason.trim()}`,
+                    origin: "admin",
+                    link: { target: "payments", params: { title: "Late fee adjusted", subtitle: "Open your bill" } },
+                    richEmail: () => sendFineAdjustedEmail(bill.tenant_email, bill.tenant_name, updatedBill, currentFine, newFine, adjustmentData.reason.trim()),
+                });
+            } catch (msgErr) { console.error("Fine adjusted message failed on every channel:", msgErr.message); }
 
             // Send push notification
             const fcmTokens = await firebase.getTenantFCMTokens(bill.tenant_id);

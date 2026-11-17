@@ -28,6 +28,9 @@ const mailService = require("./mail.service");
 const { resolveContact } = require("./contacts.service");
 const { normalizePhone, maskPhone, digitsOnly } = require("../utils/phone");
 const secretBox = require("../utils/secret.box");
+const crypto = require("crypto");
+const db = require("../config/db");
+const linksService = require("./links.service");
 
 const ALL_CHANNELS = ["whatsapp", "sms", "email"];
 const DEDUP_WINDOW_MS = 8000;
@@ -76,6 +79,93 @@ const mapProviderStatus = (s) => {
 };
 
 const tail8 = (v) => digitsOnly(v).slice(-8);
+
+
+/**
+ * Cross-process duplicate guard. The in-memory map above only protects ONE node process; with two
+ * workers (or a restart overlapping a cron run) the same reminder used to go out several times
+ * within the same minute. This claims the key in MySQL: only the first caller inside the window wins.
+ * Fails open (sends) if the database cannot be reached – a duplicate is better than a lost OTP.
+ */
+const claimInDb = async (key, windowSec) => {
+    const hash = crypto.createHash("sha256").update(String(key)).digest("hex");
+    try {
+        await db.execute(`DELETE FROM message_dedup WHERE dedup_hash = ? AND created_at < DATE_SUB(NOW(), INTERVAL ? SECOND)`, [hash, Math.max(1, Math.round(windowSec))]);
+        const [r] = await db.execute(`INSERT IGNORE INTO message_dedup (dedup_hash) VALUES (?)`, [hash]);
+        return r.affectedRows === 1;
+    } catch (e) {
+        console.error("[messaging] dedup table unavailable, sending anyway:", e.message);
+        return true;
+    }
+};
+
+/** Name / PG / room of a tenant – put at the top of every message so it is clear who it is about. */
+const tenantHeaderOf = async (userId, kind) => {
+    if (!userId || kind === "admin") return null;
+    try {
+        if (kind === "guest") {
+            const [[g]] = await db.execute(`SELECT full_name FROM tenants WHERE id = ? LIMIT 1`, [userId]);
+            return g ? { name: g.full_name, pg: null, room: null } : null;
+        }
+        const [[t]] = await db.execute(
+            `SELECT t.full_name, p.name AS pg_name, r.room_number
+               FROM tenants t
+               LEFT JOIN tenant_details td ON td.tenant_id = t.id
+               LEFT JOIN pgs p ON p.id = td.pg_id
+               LEFT JOIN rooms r ON r.id = td.room_id
+              WHERE t.id = ? LIMIT 1`, [userId]);
+        return t ? { name: t.full_name, pg: t.pg_name || null, room: t.room_number || null } : null;
+    } catch (e) {
+        console.error("[messaging] tenant header lookup failed:", e.message);
+        return null;
+    }
+};
+
+const headerText = (h) => (h ? [h.name, [h.pg, h.room ? `Room ${h.room}` : null].filter(Boolean).join(" · ")].filter(Boolean) : []);
+
+const SYSTEM_NOTE = "Sent from system";
+const footerFor = (origin, adminName) =>
+    origin === "admin" ? `${SYSTEM_NOTE} · Livinkey admin${adminName ? ` (${adminName})` : ""}` : null;
+
+/**
+ * Add the tenant header, the app link and the "sent from system" footer to every channel's text.
+ * WhatsApp: header in bold, footer in italics (the weakest style WhatsApp offers).
+ */
+const decorate = (composed, { header, link, footer, expiresAt }) => {
+    const hl = headerText(header);
+    const out = { ...composed, whatsapp: { ...composed.whatsapp }, email: { ...composed.email } };
+
+    let wa = out.whatsapp.text || "";
+    if (hl.length) wa = `*${hl[0]}*${hl[1] ? `\n${hl[1]}` : ""}\n\n${wa}`;
+    if (link) wa += `\n\n${link.label || "Open in app"}: ${link.url}`;
+    if (expiresAt) wa += `\n\n_Valid until ${fmtWhen(expiresAt)}_`;
+    if (footer) wa += `\n\n_(${footer})_`;
+    out.whatsapp.text = wa;
+
+    let sms = out.sms || "";
+    if (hl.length) sms = `${hl.join(", ")}: ${sms}`;
+    if (link) sms += ` ${link.url}`;
+    out.sms = sms;
+
+    let em = out.email.text || "";
+    if (hl.length) em = `${hl.join(" · ")}\n\n${em}`;
+    out.email = { ...out.email, text: em, ctaUrl: link?.url || null, ctaLabel: link?.label || null, footerNote: footer || null };
+    return out;
+};
+
+const fmtWhen = (d) => {
+    const date = d instanceof Date ? d : new Date(d);
+    return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hour12: true, timeZone: process.env.APP_TIMEZONE || "Asia/Kolkata" });
+};
+
+/** link may be a ready URL string, or { target, params, redirectUrl, label } for a smart link. */
+const buildLink = async (link, { userId, userType }) => {
+    if (!link) return null;
+    if (typeof link === "string") return { url: link, label: "Open" };
+    if (link.url) return { url: link.url, label: link.label || "Open" };
+    const url = await linksService.createLink({ userId, userType, target: link.target || "home", params: link.params || {}, redirectUrl: link.redirectUrl || null, ttlHours: link.ttlHours });
+    return url ? { url, label: link.label || "Open in app" } : null;
+};
 
 /** Fill in country code / e-mail / name from the user's own record when the caller didn't pass them. */
 const resolveRecipient = async ({ userId, userType, phone, countryCode, email, name }) => {
@@ -126,7 +216,8 @@ const sendEmailStep = async (payload, richEmail) => {
         payload.name || "there",
         payload.email.title,
         payload.email.text,
-        "Livinkey"
+        payload.adminName || "Livinkey",
+        { ctaUrl: payload.email.ctaUrl, ctaLabel: payload.email.ctaLabel, footerNote: payload.email.footerNote }
     );
 };
 
@@ -146,7 +237,8 @@ const runChain = async ({ chain, payload, attempts = [], richEmail = null }) => 
         const channel = chain[i];
         try {
             const r = await executeStep(channel, payload, richEmail);
-            attempts.push({ channel, ok: true, sid: r?.sid || null, mode: r?.mode || null, at: iso() });
+            attempts.push({ channel, ok: true, sid: r?.sid || null, mode: r?.mode || null, reply: r?.providerReply || null, at: iso() });
+            if (channel !== "email") console.log(`[messaging] ${LABEL[channel]} accepted${payload.tag ? ` (${payload.tag})` : ""}: ${r?.providerReply || "no reply body"}`);
             if (channel === "email") return { ok: true, channel, status: "sent", sid: null, pending: [], attempts };
             // Bigtos has no delivery receipts, so there is nobody to resume the chain later: park nothing.
             const pending = bigtos.HAS_STATUS_CALLBACKS ? chain.slice(i + 1) : [];
@@ -237,8 +329,17 @@ const sendMessage = async ({
     body = null,
     templateData = {},
     metadata = {},
-    skipEmail = false, // the caller sends its own, richer e-mail separately
-    richEmail = null, // optional () => Promise – dedicated e-mail used if the chain reaches e-mail synchronously
+    skipEmail = false, // legacy: only for callers that really must not send e-mail
+    richEmail = null, // optional () => Promise – dedicated e-mail used ONLY if WhatsApp (and SMS) could not take the message
+    origin = "system", // "admin" = typed/sent by an admin from the admin panel -> gets the "Sent from system" footer
+    adminName = null,
+    link = null, // URL string | { target, params, redirectUrl, label } -> smart link added to every channel
+    expiresAt = null, // OTPs / payment QR: the admin inbox relabels the message "Expired" once this time passes
+    dedupKey = null, // explicit idempotency key (e.g. "maint-reminder:123"); default = hash of the content
+    dedupWindowSec = null,
+    header = true, // start tenant messages with name / PG / room
+    sensitive = false, // true for passwords etc.: the admin inbox keeps only previewText, never the text
+    previewText = null,
 }) => {
     const kind = normalizeUserType(userType);
     const results = {
@@ -250,10 +351,14 @@ const sendMessage = async ({
 
     const rcpt = await resolveRecipient({ userId, userType: kind, phone, countryCode, email, name });
     const data = { ...(templateData || {}), title: title || subject || templateData?.title, body: body ?? templateData?.body ?? templateData?.message };
-    const composed = compose(type, data, { name: rcpt.name });
+    const hdr = header && type !== "otp" ? await tenantHeaderOf(userId, kind) : null;
+    const lnk = await buildLink(link, { userId, userType: kind });
+    const composed = decorate(compose(type, data, { name: rcpt.name }), { header: hdr, link: lnk, footer: footerFor(origin, adminName), expiresAt: type === "otp" ? null : expiresAt });
 
-    const dedupKey = [userId || "", rcpt.e164 || "", rcpt.email || "", type, composed.whatsapp.text.slice(0, 120)].join("|");
-    if (isDuplicateSend(dedupKey)) {
+    const autoKey = [userId || "", rcpt.e164 || "", rcpt.email || "", type, composed.whatsapp.text].join("|");
+    const key = dedupKey ? `${dedupKey}|${userId || rcpt.e164 || rcpt.email || ""}` : autoKey;
+    const windowSec = Number(dedupWindowSec) > 0 ? Number(dedupWindowSec) : origin === "admin" ? 20 : type === "otp" ? 30 : 120;
+    if (isDuplicateSend(key) || !(await claimInDb(key, windowSec))) {
         results.skippedDuplicate = true;
         console.warn("[messaging] duplicate send skipped:", type, userId || rcpt.e164);
         return results;
@@ -284,9 +389,9 @@ const sendMessage = async ({
                 direction: "outbound",
                 channel: chain[0] || "email",
                 message_type: type,
-                content: type === "otp" ? composed.preview : composed.whatsapp.text || composed.preview,
+                content: type === "otp" || sensitive ? (previewText || composed.preview) : composed.whatsapp.text || composed.preview,
                 status: "queued",
-                metadata: { ...metadata, type, chain, templateData: safeTemplateData(templateData) },
+                metadata: { ...metadata, type, chain, origin, expires_at: expiresAt ? new Date(expiresAt).toISOString() : undefined, templateData: safeTemplateData(templateData) },
             });
             messageId = rec.id;
             results.messageId = messageId;
@@ -297,7 +402,7 @@ const sendMessage = async ({
 
     const payload = {
         tag: `${type}${userId ? `#${userId}` : ""}`,
-        type, name: rcpt.name, e164: rcpt.e164,
+        type, name: rcpt.name, e164: rcpt.e164, adminName,
         emailTo: rcpt.email, email: composed.email,
         whatsapp: composed.whatsapp, sms: composed.sms,
         emailKind: type === "otp" ? "otp" : null,
@@ -336,6 +441,13 @@ const sendToNumber = async ({ phone, countryCode = null, name = null, type = "cu
     const e164 = normalizePhone(phone, countryCode);
     if (!e164) throw Object.assign(new Error("That phone number is not valid."), { status: 400 });
     const composed = compose(type, data, { name: name || "there" });
+    const waLink = `https://wa.me/${digitsOnly(e164)}?text=${encodeURIComponent(composed.whatsapp.text || "")}`;
+
+    // double-click / retry guard: the same details to the same number within 15 s are sent once
+    const dupKey = ["fwd", type, e164, data.id || "", data.note || "", forwardId ? "" : composed.whatsapp.text.slice(0, 80)].join("|");
+    if (!(await claimInDb(dupKey, 15))) {
+        return { ok: true, duplicate: true, to: e164, channel: null, status: "sent", attempts: [], fallbackUsed: false, error: null, waLink };
+    }
     const chain = buildChain({ e164, email: null, preference: "auto", skipEmail: true });
     if (!chain.length) throw Object.assign(new Error("WhatsApp and SMS are not configured on the server (Bigtos settings missing: BIGTOS_API_KEY)."), { status: 503 });
 
@@ -343,7 +455,7 @@ const sendToNumber = async ({ phone, countryCode = null, name = null, type = "cu
     const outcome = await runChain({ chain, payload });
     if (forwardId) await persistOutcome({ target: { forwardId }, outcome, payload });
     return {
-        ok: outcome.ok, to: e164, channel: outcome.channel, status: outcome.status,
+        ok: outcome.ok, to: e164, channel: outcome.channel, status: outcome.status, waLink,
         attempts: outcome.attempts, fallbackUsed: outcome.attempts.some((a) => !a.ok),
         error: outcome.ok ? null : failureSummary(outcome.attempts),
     };
@@ -423,8 +535,8 @@ const contactFields = (user) => ({
     name: user.full_name || user.name || null,
 });
 
-const sendOTP = (user, otp, purpose = "Login") =>
-    sendMessage({ ...contactFields(user), type: "otp", templateData: { otp, purpose } });
+const sendOTP = (user, otp, purpose = "Login", opts = {}) =>
+    sendMessage({ ...contactFields(user), type: "otp", templateData: { otp, purpose }, expiresAt: new Date(Date.now() + 5 * 60 * 1000), ...opts });
 
 const sendBill = (user, billData, opts = {}) =>
     sendMessage({ ...contactFields(user), type: "bill", templateData: billData, ...opts });

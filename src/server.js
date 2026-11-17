@@ -147,6 +147,9 @@ async function startServer() {
             }
         });
         console.log('📅 Maintenance completion reminder scheduler running every 10 minutes');
+
+        // Housekeeping: expired smart links and old duplicate-guard rows
+        cron.schedule('30 3 * * *', () => require('./services/links.service').purgeExpired());
         // ------------------------------------------------------------
         // App install check: every 6 hours ask FCM (dry run, silent) which
         // saved devices no longer exist, and mark those as uninstalled.

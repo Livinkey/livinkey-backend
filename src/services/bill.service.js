@@ -6,31 +6,33 @@ const { uploadFile, deleteFile } = require("./upload.service");
 const paymentService = require("./payment.service");
 const messagingService = require("./messaging.service");
 
-// Helper: try WhatsApp notification (non-blocking)
-const tryWhatsApp = async (userObj, type, data = {}) => {
+/**
+ * Deliver a message to a tenant: WhatsApp first, then SMS (if configured), and the dedicated
+ * e-mail (`extra.richEmail`) ONLY if no earlier channel took it. Never throws, so a messaging
+ * problem can never break a bill / payment flow. Resolves to true when some channel accepted it.
+ *   extra: { richEmail, link, origin, adminName, expiresAt, dedupKey, dedupWindowSec }
+ */
+const tryWhatsApp = async (userObj, type, data = {}, extra = {}) => {
     try {
-        // skipEmail: true because this file already sends email separately
         const base = {
             userId: userObj.id,
             userType: userObj.role || "tenant",
             phone: userObj.phone,
+            countryCode: userObj.country_code || null,
             email: userObj.email,
             name: userObj.full_name || userObj.name || "User",
-            skipEmail: true,
+            ...extra,
         };
-        if (type === "bill") {
-            await messagingService.sendMessage({ ...base, type: "bill", templateData: data });
-        } else if (type === "fine") {
-            await messagingService.sendMessage({ ...base, type: "fine", templateData: data });
-        } else if (type === "otp") {
-            await messagingService.sendMessage({ ...base, type: "otp", templateData: { otp: data.otp, purpose: data.purpose || "Cash Payment" } });
-        } else if (type === "custom") {
-            await messagingService.sendMessage({ ...base, type: "custom", title: data.title || "Message", body: data.message || "" });
-        } else {
-            await messagingService.sendMessage({ ...base, type, ...data, skipEmail: true });
-        }
+        let r;
+        if (type === "bill") r = await messagingService.sendMessage({ ...base, type: "bill", templateData: data });
+        else if (type === "fine") r = await messagingService.sendMessage({ ...base, type: "fine", templateData: data });
+        else if (type === "otp") r = await messagingService.sendMessage({ ...base, type: "otp", templateData: { otp: data.otp, purpose: data.purpose || "Cash Payment" } });
+        else if (type === "custom") r = await messagingService.sendMessage({ ...base, type: "custom", title: data.title || "Message", body: data.message || "" });
+        else r = await messagingService.sendMessage({ ...base, type, ...data });
+        return !r.skippedDuplicate;
     } catch (e) {
-        console.error("WhatsApp notification failed:", e.message);
+        console.error("Tenant message failed on every channel:", e.message);
+        return false;
     }
 };
 
@@ -502,25 +504,22 @@ const createBill = async (billData, files = {}) => {
         try {
             billForEmail = await BillModel.getBillById(billId);
             if (billData.skipEmail) throw new Error("SKIP_GROUP_ANCHOR_EMAIL");
-            await sendBillEmail(
-                billForEmail.tenant_email,
-                billForEmail.tenant_name,
-                billForEmail,
-                paymentQr,
-                partialQr,
-                meterImage,
-                adminQr,
-                meterImage2
-            );
-            emailSent = true;
-            // Also send via WhatsApp
-            tryWhatsApp(
+            // WhatsApp first; the full e-mail (QR codes, meter photos) only if WhatsApp could not take it.
+            emailSent = await tryWhatsApp(
                 { id: billForEmail.tenant_id, phone: billForEmail.tenant_phone, email: billForEmail.tenant_email, full_name: billForEmail.tenant_name, role: "tenant" },
                 "bill",
-                { amount: billForEmail.total_amount || billForEmail.amount, dueDate: billForEmail.due_date, billId: billForEmail.id }
-            );;
+                { amount: billForEmail.total_amount || billForEmail.amount, dueDate: billForEmail.due_date, billId: billForEmail.id, billingMonth: billForEmail.billing_month },
+                {
+                    link: { target: "payments", params: { title: `Bill ${billForEmail.billing_month || ""}`.trim(), subtitle: "Open your bill and pay securely" } },
+                    dedupKey: `bill-created:${billForEmail.id}`, dedupWindowSec: 600,
+                    richEmail: () => sendBillEmail(
+                        billForEmail.tenant_email, billForEmail.tenant_name, billForEmail,
+                        paymentQr, partialQr, meterImage, adminQr, meterImage2
+                    ),
+                }
+            );
         } catch (emailError) {
-            console.error("Failed to send bill email:", emailError);
+            console.error("Failed to notify tenant about the new bill:", emailError);
         }
 
         createdBill = await BillModel.getBillById(billId);
@@ -708,24 +707,20 @@ const sendCustomMessageToTenant = async (billId, messageData, files = {}) => {
         try {
             const updatedBill = await BillModel.getBillById(billId);
             const adminName = messageData.admin_name || 'Livinkey Admin';
-            // Dual channel
-            tryWhatsApp(
+            // WhatsApp first (with a pay link); the rich e-mail with QR codes only as the fallback.
+            await tryWhatsApp(
                 { id: bill.tenant_id, phone: bill.tenant_phone, email: bill.tenant_email, full_name: bill.tenant_name, role: "tenant" },
                 "custom",
-                { title: messageData.subject || "Message", message: messageData.message }
-            );
-            await sendCustomBillMessageEmail(
-                bill.tenant_email,
-                bill.tenant_name,
-                adminName,
-                messageData.subject,
-                messageData.message,
-                qrCodeUrl,
-                adminQrUrl,
-                totalDue,
-                bill.pg_name,
-                bill.room_number,
-                qrExpiresAt
+                { title: messageData.subject || "Message", message: messageData.message },
+                {
+                    origin: "admin", adminName,
+                    expiresAt: qrExpiresAt || null,
+                    link: { target: "payments", params: { title: messageData.subject || "Your bill", subtitle: "Open your bill and pay securely" } },
+                    richEmail: () => sendCustomBillMessageEmail(
+                        bill.tenant_email, bill.tenant_name, adminName, messageData.subject, messageData.message,
+                        qrCodeUrl, adminQrUrl, totalDue, bill.pg_name, bill.room_number, qrExpiresAt
+                    ),
+                }
             );
         } catch (emailError) {
             console.error("Failed to send custom message email:", emailError);
@@ -778,18 +773,16 @@ const requestCashPaymentOTP = async (billId, paymentData) => {
         await connection.commit();
 
         try {
-            tryWhatsApp(
+            await tryWhatsApp(
                 { id: bill.tenant_id, phone: bill.tenant_phone, email: bill.tenant_email, full_name: bill.tenant_name, role: "tenant" },
                 "otp",
-                { otp: otp, purpose: "Cash Payment" }
-            );
-            await sendCashPaymentOTPEmail(
-                bill.tenant_email,
-                bill.tenant_name,
-                otp,
-                paymentData.amount,
-                bill.pg_name,
-                bill.room_number
+                { otp: otp, purpose: "Cash Payment" },
+                {
+                    expiresAt: expiry,
+                    richEmail: () => sendCashPaymentOTPEmail(
+                        bill.tenant_email, bill.tenant_name, otp, paymentData.amount, bill.pg_name, bill.room_number
+                    ),
+                }
             );
         } catch (emailError) {
             console.error("Failed to send OTP email:", emailError);
@@ -797,7 +790,7 @@ const requestCashPaymentOTP = async (billId, paymentData) => {
 
         return { 
             success: true, 
-            message: "OTP sent to tenant's email",
+            message: "OTP sent to the tenant (WhatsApp, or email if WhatsApp is unavailable)",
             bill_id: billId,
             amount: paymentData.amount
         };
@@ -1169,24 +1162,21 @@ const processDelayedPayments = async () => {
                 if (shouldSendEmail) {
                     try {
                         const updatedBill = await BillModel.getBillById(bill.id);
-                        tryWhatsApp(
+                        await tryWhatsApp(
                             { id: bill.tenant_id, phone: bill.tenant_phone, email: bill.tenant_email, full_name: bill.tenant_name, role: "tenant" },
                             "fine",
                             {
                                 amount: fineAmount,
                                 reason: `Bill is ${fineAppliedDays} day${fineAppliedDays === 1 ? '' : 's'} overdue. Total due now ₹${totalWithFine.toFixed(2)}`
+                            },
+                            {
+                                link: { target: "payments", params: { title: "Late fee on your bill", subtitle: "Open your bill and pay securely" } },
+                                dedupKey: `bill-fine:${bill.id}:${fineAppliedDays}`, dedupWindowSec: 20 * 3600,
+                                richEmail: () => sendFineNotificationEmail(
+                                    bill.tenant_email, bill.tenant_name, updatedBill, fineAmount, fineAppliedDays,
+                                    hasPartialPayment, fullQrUrl, partialQrUrl, previousFine
+                                ),
                             }
-                        );
-                        await sendFineNotificationEmail(
-                            bill.tenant_email,
-                            bill.tenant_name,
-                            updatedBill,
-                            fineAmount,
-                            fineAppliedDays,
-                            hasPartialPayment,
-                            fullQrUrl,
-                            partialQrUrl,
-                            previousFine
                         );
                     } catch (emailError) {
                         console.error(`Failed to send fine email for bill ${bill.id}:`, emailError);
@@ -1494,17 +1484,16 @@ const generateBillPaymentOptions = async (billId) => {
     }
 
     try {
-        tryWhatsApp(
+        const rupees = Number(totalDue).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+        await tryWhatsApp(
             { id: tenant.id, phone: tenant.phone, email: tenant.email, full_name: tenant.full_name, role: "tenant" },
             "custom",
-            { title: "Payment Link", message: "Your payment options are ready. Please check the app or email." }
-        );
-        await sendPaymentLinkEmail(
-            tenant.email,
-            tenant.full_name,
-            bill,
-            paymentOptions,
-            orderData
+            { title: "Payment link", message: `Your payment options for ₹${rupees} are ready. Tap the link to pay with any UPI app, or open your bill in the Livinkey app.` },
+            {
+                origin: "admin",
+                link: { target: "pay", label: "Pay now", params: { title: "Pay your bill", amount: `₹${rupees}`, subtitle: "Amount due", upi: paymentOptions.upi_link } },
+                richEmail: () => sendPaymentLinkEmail(tenant.email, tenant.full_name, bill, paymentOptions, orderData),
+            }
         );
     } catch (emailError) {
         console.error('Failed to send payment link email:', emailError);
@@ -1573,7 +1562,9 @@ const checkAndSendPaymentReminders = async () => {
                     await messagingService.sendMessage({
                         userId: tenant.id, userType: "tenant", name: tenant.full_name,
                         type: "reminder", title: "Payment reminder",
-                        body: `Your next payment is due ${when}.${due > 0 ? ` Amount due: ${require("./messaging.templates").inr(due)}.` : ""}\nOpen the Livinkey app to see your bill and pay securely.`,
+                        body: `Your next payment is due ${when}.${due > 0 ? ` Amount due: ${require("./messaging.templates").inr(due)}.` : ""}\nOpen your bill to pay securely.`,
+                        link: { target: "payments", params: { title: "Payment reminder", subtitle: "Open your bill and pay securely" } },
+                        dedupKey: `pay-reminder:${tenant.id}:${new Date().toISOString().slice(0, 10)}`, dedupWindowSec: 20 * 3600,
                     });
                 } catch (msgErr) {
                     console.error(`Payment reminder message failed for ${tenant.full_name}:`, msgErr.message);
@@ -2032,20 +2023,22 @@ const createBillsForTenants = async (tenantIds, billData, files = {}) => {
                 let emailCount = 0;
                 for (const tenant of allOccupants) {
                     try {
-                        if (tenant.email) {
-                            await sendBillEmail(
-                                tenant.email, tenant.full_name,
-                                { ...fullBill, tenant_name: tenant.full_name, tenant_email: tenant.email },
-                                fullBill.payment_qr, fullBill.partial_payment_qr,
-                                fullBill.electricity_meter_image, fullBill.admin_qr, fullBill.electricity_meter_image_2
-                            );
-                            emailCount++;
-                        }
-                        tryWhatsApp(
+                        const delivered = await tryWhatsApp(
                             { id: tenant.tenant_id, phone: tenant.phone, email: tenant.email, full_name: tenant.full_name, role: "tenant" },
                             "bill",
-                            { amount: fullBill.total_amount, dueDate: fullBill.due_date, billId: fullBill.id }
+                            { amount: fullBill.total_amount, dueDate: fullBill.due_date, billId: fullBill.id, billingMonth: fullBill.billing_month },
+                            {
+                                link: { target: "payments", params: { title: `Bill ${fullBill.billing_month || ""}`.trim(), subtitle: "Open your bill and pay securely" } },
+                                dedupKey: `bill-created:${fullBill.id}`, dedupWindowSec: 600,
+                                richEmail: tenant.email ? () => sendBillEmail(
+                                    tenant.email, tenant.full_name,
+                                    { ...fullBill, tenant_name: tenant.full_name, tenant_email: tenant.email },
+                                    fullBill.payment_qr, fullBill.partial_payment_qr,
+                                    fullBill.electricity_meter_image, fullBill.admin_qr, fullBill.electricity_meter_image_2
+                                ) : null,
+                            }
                         );
+                        if (delivered) emailCount++;
                     } catch (e) {
                         console.error(`Failed to notify group tenant ${tenant.tenant_id}:`, e.message);
                     }

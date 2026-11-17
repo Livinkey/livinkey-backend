@@ -47,7 +47,7 @@ const generateAndSendOTP = async (admin, context = "Login") => {
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
 
     // WhatsApp -> SMS -> Email
-    const sent = await messagingService.sendOTP(admin, otp, context);
+    const sent = await messagingService.sendOTP(admin, otp, context, { expiresAt: expiry });
 
     return { otp, hashedOTP, expiry, delivery: describeDelivery(admin, sent) };
 };
@@ -71,7 +71,7 @@ const generateAndSendTenantOTP = async (tenant, context = "Forgot Password") => 
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
 
     // WhatsApp -> SMS -> Email
-    const sent = await messagingService.sendOTP(tenant, otp, context);
+    const sent = await messagingService.sendOTP(tenant, otp, context, { expiresAt: expiry });
 
     return { otp, hashedOTP, expiry, delivery: describeDelivery(tenant, sent) };
 };
@@ -95,7 +95,7 @@ const generateAndSendGuestOTP = async (guest, context = "Forgot Password") => {
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
 
     // WhatsApp -> SMS -> Email
-    const sent = await messagingService.sendOTP(guest, otp, context);
+    const sent = await messagingService.sendOTP(guest, otp, context, { expiresAt: expiry });
 
     return { otp, hashedOTP, expiry, delivery: describeDelivery(guest, sent) };
 };

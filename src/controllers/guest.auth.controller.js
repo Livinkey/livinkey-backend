@@ -115,13 +115,13 @@ exports.register = async (req, res) => {
 
         // Send welcome email to guest
         try {
-            await sendWelcomeGuestEmail(
-                email,
-                full_name,
-                nationality,
-                country_code,
-                phone
-            );
+            await require("../services/messaging.service").sendMessage({
+                userType: "guest", phone, countryCode: country_code, email, name: full_name,
+                type: "custom", title: "Welcome to Livinkey",
+                body: `Hello ${full_name}, your Livinkey guest account has been created. You can sign in with your email or phone number and your password.`,
+                link: { url: require("../utils/links").APP_STORE_URL, label: "Get the app" },
+                richEmail: () => sendWelcomeGuestEmail(email, full_name, nationality, country_code, phone),
+            });
         } catch (emailError) {
             console.error("Failed to send welcome email to guest:", emailError);
             // Don't fail registration if email fails

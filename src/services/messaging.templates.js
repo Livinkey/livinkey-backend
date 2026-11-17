@@ -127,7 +127,7 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
             ];
             if (d.imageUrl) lines.push(`• Photo: ${d.imageUrl}`);
             if (d.note) lines.push("", `Note from ${d.senderName || BRAND}: ${d.note}`);
-            lines.push("", `Forwarded from the ${BRAND} admin panel.`);
+            lines.push("", `_(Sent from system · ${BRAND} admin panel)_`);
 
             const location = [d.pgName, d.roomNumber ? `Room ${d.roomNumber}` : null].filter(Boolean).join(", ") || "-";
             const details = [
@@ -157,7 +157,7 @@ const compose = (type, data = {}, { name = "there" } = {}) => {
                     },
                 },
                 sms: smsParts.join("\n"),
-                email: { title: `Maintenance request #${d.id} · ${d.issueType}`, text: lines.join("\n").replace(/\*/g, "") },
+                email: { title: `Maintenance request #${d.id} · ${d.issueType}`, text: lines.join("\n").replace(/\*/g, "").replace(/^_\((.*)\)_$/m, "($1)") },
                 preview: `Maintenance #${d.id} (${d.issueType}) forwarded`,
             };
         }

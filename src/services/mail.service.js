@@ -861,18 +861,32 @@ const sendFineAdjustedEmail = async (email, tenantName, billData, oldFine, newFi
 /**
  * Send custom admin notification email to tenant
  */
-const sendCustomAdminNotificationEmail = async (email, tenantName, title, message, adminName) => {
-    const formattedMessage = message.replace(/\n/g, '<br>');
-    
+const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/** Escape, keep line breaks, and turn bare http(s) URLs into real, clickable links. */
+const linkifyHtml = (text) => escHtml(text)
+    .replace(/(https?:\/\/[^\s<]+)/g, (u) => `<a href="${u}" target="_blank" style="color:#4d7c0f;word-break:break-all;">${u}</a>`)
+    .replace(/\n/g, '<br>');
+
+const sendCustomAdminNotificationEmail = async (email, tenantName, title, message, adminName, opts = {}) => {
+    const { ctaUrl = null, ctaLabel = null, footerNote = null } = opts || {};
+    const formattedMessage = linkifyHtml(message);
+    const safeTitle = escHtml(title);
+    const button = ctaUrl
+        ? `<a href="${escHtml(ctaUrl)}" target="_blank" style="display: inline-block; background-color: #92C24A; color: #000000; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 15px;">${escHtml(ctaLabel || 'Open in app')}</a>`
+        : '';
+    const weakFooter = footerNote
+        ? `<tr><td style="padding: 6px 0 0; text-align: center; color: #a0aec0; font-size: 12px;">(${escHtml(footerNote)})</td></tr>`
+        : '';
+
     const content = `
     <tr>
         <td style="color: #000000; font-size: 24px; font-weight: 600; padding-bottom: 8px; text-align: center;">
-            Hello ${tenantName}!
+            Hello ${escHtml(tenantName)}!
         </td>
     </tr>
     <tr>
         <td style="color: #4a5568; font-size: 16px; line-height: 1.6; text-align: center; padding-bottom: 10px;">
-            You have received a new message from <strong>${adminName}</strong>.
+            You have received a new message from <strong>${escHtml(adminName)}</strong>.
         </td>
     </tr>
     <tr>
@@ -880,14 +894,14 @@ const sendCustomAdminNotificationEmail = async (email, tenantName, title, messag
             <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #f8faf5; border-radius: 12px; border: 1px solid #e8ecf1;">
                 <tr>
                     <td style="padding: 30px;">
-                        <p style="color: #000000; font-size: 16px; font-weight: 600; margin: 0 0 12px 0; text-align: center;">📢 ${title}</p>
+                        <p style="color: #000000; font-size: 16px; font-weight: 600; margin: 0 0 12px 0; text-align: center;">📢 ${safeTitle}</p>
                         <div style="background: #ffffff; border-radius: 8px; padding: 20px; border: 1px solid #e8ecf1; min-height: 80px;">
-                            <p style="color: #4a5568; font-size: 15px; line-height: 1.8; margin: 0; white-space: pre-wrap;">
+                            <p style="color: #4a5568; font-size: 15px; line-height: 1.8; margin: 0;">
                                 ${formattedMessage}
                             </p>
                         </div>
                         <p style="color: #718096; font-size: 13px; margin-top: 12px; margin-bottom: 0; text-align: center;">
-                            Sent on: ${new Date().toLocaleString()}
+                            Sent on: ${new Date().toLocaleString('en-IN', { timeZone: process.env.APP_TIMEZONE || 'Asia/Kolkata' })}
                         </p>
                     </td>
                 </tr>
@@ -896,15 +910,14 @@ const sendCustomAdminNotificationEmail = async (email, tenantName, title, messag
     </tr>
     <tr>
         <td style="padding: 10px 0; text-align: center;">
-            <a href="${WEBSITE_URL}" target="_blank" style="display: inline-block; background-color: #92C24A; color: #000000; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 15px;">
-                View in App
-            </a>
+            ${button}
         </td>
     </tr>
+    ${weakFooter}
     `;
 
     const html = buildEmailTemplate({
-        title: `📢 ${title}`,
+        title: `📢 ${safeTitle}`,
         content,
         headerIcon: '📢',
         headerLabel: 'Livinkey',

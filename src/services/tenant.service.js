@@ -391,29 +391,27 @@ const createTenant = async (tenantData, files = {}) => {
         }
 
         try {
-            try {
-                await messagingService.sendMessage({
-                    userId: tenantId,
-                    userType: "tenant",
-                    phone: tenantData.phone,
-                    email: tenantData.email,
-                    name: tenantData.full_name,
-                    type: "custom",
-                    skipEmail: true, // welcome email with credentials is sent below
-                    title: "Welcome to Livinkey",
-                    body: `Hello ${tenantData.full_name}, your account has been created successfully. Please login to continue.`
-                });
-            } catch (waErr) { console.error("WhatsApp welcome failed:", waErr.message); }
-            await sendWelcomeTenantEmail(
-                tenantData.email,
-                tenantData.full_name,
-                tenantData.role,
-                plainPassword,
-                pgName,
-                roomNumber
-            );
+            // Login credentials go to WhatsApp; the credentials e-mail is only the fallback.
+            const isGuestRole = tenantData.role !== 'tenant';
+            await messagingService.sendMessage({
+                userId: tenantId,
+                userType: isGuestRole ? "guest" : "tenant",
+                phone: tenantData.phone,
+                countryCode: tenantData.country_code || null,
+                email: tenantData.email,
+                name: tenantData.full_name,
+                type: "custom",
+                sensitive: true,
+                previewText: "Welcome to Livinkey - login details sent",
+                title: "Welcome to Livinkey",
+                body: `Your Livinkey account is ready.\n\nSign in with your phone number or email:\n• Email: ${tenantData.email}\n• Phone: ${tenantData.phone}\n• Temporary password: ${plainPassword}\n\nYou will be asked to set a new password the first time you sign in. Never share your password with anyone.\n\nDownload the app: ${require("../utils/links").APP_STORE_URL}`,
+                richEmail: () => sendWelcomeTenantEmail(
+                    tenantData.email, tenantData.full_name, tenantData.role, plainPassword, pgName, roomNumber
+                ),
+                dedupKey: `welcome:${tenantId}`, dedupWindowSec: 3600,
+            });
         } catch (emailError) {
-            console.error("Failed to send welcome email:", emailError);
+            console.error("Welcome message failed on every channel:", emailError.message);
         }
 
         createdTenant = await TenantModel.getTenantWithDocuments(tenantId);
@@ -854,23 +852,18 @@ const checkAndSendEFRROExpiryNotifications = async () => {
         
         for (const tenant of expiringTenants) {
             try {
-                try {
-                    await messagingService.sendMessage({
-                        userId: tenant.id,
-                        userType: "tenant",
-                        phone: tenant.phone,
-                        email: tenant.email,
-                        name: tenant.full_name,
-                        type: "efrro",
-                        skipEmail: true, // dedicated e-FRRO email is sent right below
-                        templateData: { daysLeft: tenant.days_until_expiry }
-                    });
-                } catch (waErr) { console.error("WhatsApp eFRRO failed:", waErr.message); }
-                await sendEFRROExpiryTenantEmail(
-                    tenant.email,
-                    tenant.full_name,
-                    tenant
-                );
+                await messagingService.sendMessage({
+                    userId: tenant.id,
+                    userType: "tenant",
+                    phone: tenant.phone,
+                    email: tenant.email,
+                    name: tenant.full_name,
+                    type: "efrro",
+                    templateData: { daysLeft: tenant.days_until_expiry },
+                    link: { target: "documents", params: { title: "e-FRRO renewal", subtitle: "Open your documents" } },
+                    dedupKey: `efrro:${tenant.id}:${new Date().toISOString().slice(0, 10)}`, dedupWindowSec: 20 * 3600,
+                    richEmail: () => sendEFRROExpiryTenantEmail(tenant.email, tenant.full_name, tenant),
+                });
                 tenantEmailsSent++;
             } catch (error) {
                 tenantEmailErrors++;
@@ -892,11 +885,16 @@ const checkAndSendEFRROExpiryNotifications = async () => {
         if (superAdmins.length > 0) {
             for (const admin of superAdmins) {
                 try {
-                    await sendEFRROExpiryAdminEmail(
-                        admin.email,
-                        admin.full_name,
-                        expiringTenants
-                    );
+                    const names = expiringTenants.slice(0, 10).map(t => `• ${t.full_name} - ${t.days_until_expiry} day(s) left`).join("\n");
+                    const more = expiringTenants.length > 10 ? `\n…and ${expiringTenants.length - 10} more` : "";
+                    await messagingService.sendMessage({
+                        userId: admin.id, userType: "admin", phone: admin.phone, email: admin.email, name: admin.full_name,
+                        type: "custom", title: "e-FRRO expiry report",
+                        body: `${expiringTenants.length} tenant(s) have an e-FRRO expiring soon:\n${names}${more}`,
+                        link: { url: require("../utils/links").adminPage("tenants"), label: "Open tenants" },
+                        dedupKey: `efrro-admin:${admin.id}:${new Date().toISOString().slice(0, 10)}`, dedupWindowSec: 20 * 3600,
+                        richEmail: () => sendEFRROExpiryAdminEmail(admin.email, admin.full_name, expiringTenants),
+                    });
                     adminEmailsSent++;
                 } catch (error) {
                     adminEmailErrors++;
@@ -974,6 +972,8 @@ const checkAndSendDocumentReminders = async () => {
                                 userId: tenant.id, userType: "tenant", name: tenant.full_name,
                                 type: "reminder", title: "Documents pending",
                                 body: `Please upload your pending document${missingDocs.length === 1 ? "" : "s"}: ${docLabel}.\nOpen the Livinkey app > Documents to upload.`,
+                                link: { target: "documents", params: { title: "Upload your documents", subtitle: "Open Documents" } },
+                                dedupKey: `doc-reminder:${tenant.id}:${new Date().toISOString().slice(0, 10)}`, dedupWindowSec: 20 * 3600,
                             });
                         } catch (msgErr) {
                             console.error(`Document reminder message failed for ${tenant.full_name}:`, msgErr.message);

@@ -331,10 +331,13 @@ const forwardRequest = async (req, res) => {
             { id: req.admin?.id, name: req.admin?.name },
             req
         );
+        if (result.duplicate) {
+            return res.json({ success: true, message: "These details were just sent to that number.", data: result });
+        }
         if (!result.ok) {
             return res.status(502).json({
                 success: false,
-                message: "The details could not be delivered on WhatsApp or SMS. Check that the number is correct and can receive messages.",
+                message: "The details could not be sent on WhatsApp. Check that the number is correct and has WhatsApp, or use \"Open in WhatsApp\" to send them yourself.",
                 data: result,
             });
         }
