@@ -154,7 +154,7 @@ const sendGuestMessageEmail = async (email, guestName, adminName, message, subje
         headerColor: '#92C24A',
         alertMessage: 'If you have any questions, please reply to this email or contact the Livinkey support team.',
         alertColor: '#92C24A',
-        footerText: 'This is an automated message from the Livinkey admin panel.'
+        footerText: 'This is an automated message from the Livinkey Management.'
     });
 
     await transporter.sendMail({
@@ -384,7 +384,7 @@ const sendCustomBillMessageEmail = async (email, tenantName, adminName, subject,
         headerIcon: '📩',
         headerLabel: 'Livinkey',
         headerColor: '#92C24A',
-        footerText: 'This is an automated message from the Livinkey admin panel.'
+        footerText: 'This is an automated message from the Livinkey Management.'
     });
 
     await transporter.sendMail({
@@ -924,7 +924,7 @@ const sendCustomAdminNotificationEmail = async (email, tenantName, title, messag
         headerColor: '#92C24A',
         alertMessage: 'This is an official message from the Livinkey admin team. Please read carefully.',
         alertColor: '#3498db',
-        footerText: 'This is an automated message from the Livinkey admin panel.'
+        footerText: 'This is an automated message from the Livinkey Management.'
     });
 
     await transporter.sendMail({
