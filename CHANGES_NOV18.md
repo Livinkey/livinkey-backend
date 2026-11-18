@@ -27,3 +27,7 @@
 - Tenants: typing no longer wipes chip filters; search also covers email, phone, PG, bill status.
 - Guests, admins, PGs, documents, feedbacks (local search, was server call per keystroke), maintenance, archive (live filters, Clear button), notifications picker, activity log (debounced) updated.
 - Backend bill search: multi-word across name, email, phone, PG, room, month.
+
+## Fixes: chatbot + reset-password deploy check (18 Nov 2026, later)
+- Chatbot: `src/services/chatbot.service.js` was an EMPTY file, so `chatbotService.getQuickQuestions is not a function` was thrown by GET /api/chatbot/quick-questions (and `answerQuestion` by POST /api/chatbot/ask). The service is now implemented. All answers come from live MySQL data of active PGs (rent, security fee, amenities, vacant rooms, ratings, public contact), nothing hardcoded; quick questions are generated from the data too.
+- Reset password: the routes `POST /api/tenants/:id/reset-password` and `POST /api/admins/:id/reset-password` are in the code (tenant.routes.js, admin.routes.js). "Route not found" means the running server is an older build. After deploying, open the API root (https://api.livinkey.com/): the JSON must show `"build": "2026-11-18-reset-password-chatbot"` and list `tenant-reset-password` and `chatbot` in `features`. If it doesn't, the new code isn't deployed yet.

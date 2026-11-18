@@ -115,10 +115,16 @@ app.use((req, res, next) => {
 });
 
 // Health check endpoint
+// `build` / `features` let you confirm in one request that the deployed server is the latest code:
+// open https://api.livinkey.com/ and check that "tenant-reset-password" and "chatbot" are listed.
+const BUILD_ID = "2026-11-18-reset-password-chatbot";
+const BUILD_FEATURES = ["tenant-reset-password", "admin-reset-password", "chatbot"];
 app.get("/", (req, res) => {
     res.json({
         success: true,
         message: "Livinkey Backend Running",
+        build: BUILD_ID,
+        features: BUILD_FEATURES,
         timestamp: new Date().toISOString()
     });
 });
