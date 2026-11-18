@@ -300,12 +300,13 @@ const downloadMyDocument = async (req, res) => {
             });
         }
 
-        return res.redirect(document.document_url);
+        return await require("../services/document.file.service").sendDocument(res, document, { inline: req.query.inline === "1" });
     } catch (error) {
-        console.error("Download My Document Error:", error);
-        return res.status(500).json({
+        if (res.headersSent) return res.end();
+        console.error("Download My Document Error:", error.message);
+        return res.status(error.status || 500).json({
             success: false,
-            message: error.message || "Internal server error"
+            message: error.status ? error.message : "Could not open the document. Please try again."
         });
     }
 };

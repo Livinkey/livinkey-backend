@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const axios = require('axios');
+const { fetchDocumentFile } = require('./document.file.service');
 const JSZip = require('jszip'); // Using JSZip instead of archiver
 
 // Get required documents based on tenant residency
@@ -362,24 +363,11 @@ const downloadDocumentsAsZip = async (documentIds) => {
         for (const doc of documents) {
             try {
                 // Get file extension from URL
-                let extension = 'jpg';
-                if (doc.document_url) {
-                    const urlParts = doc.document_url.split('.');
-                    const ext = urlParts[urlParts.length - 1].split('?')[0];
-                    if (ext && ext.length <= 5) {
-                        extension = ext;
-                    }
-                }
-                
-                const fileName = `${doc.tenant_name || 'tenant'}_${doc.document_type || 'document'}_${Date.now()}.${extension}`;
-                
-                // Download the file from Cloudinary
-                const response = await axios({
-                    method: 'get',
-                    url: doc.document_url,
-                    responseType: 'arraybuffer',
-                    timeout: 30000
-                });
+                // Fetched server-side (signed / authenticated fallbacks) so PDFs are included too.
+                const file = await fetchDocumentFile(doc);
+                const extension = file.ext;
+                const fileName = `${doc.tenant_name || 'tenant'}_${doc.document_type || 'document'}_${doc.id}.${extension}`;
+                const response = { data: file.buffer };
 
                 // Add the file to the zip
                 zip.file(fileName, response.data);
@@ -433,23 +421,11 @@ const downloadDocumentsAsZipBuffer = async (documentIds) => {
 
         for (const doc of documents) {
             try {
-                let extension = 'jpg';
-                if (doc.document_url) {
-                    const urlParts = doc.document_url.split('.');
-                    const ext = urlParts[urlParts.length - 1].split('?')[0];
-                    if (ext && ext.length <= 5) {
-                        extension = ext;
-                    }
-                }
-                
-                const fileName = `${doc.tenant_name || 'tenant'}_${doc.document_type || 'document'}_${Date.now()}.${extension}`;
-                
-                const response = await axios({
-                    method: 'get',
-                    url: doc.document_url,
-                    responseType: 'arraybuffer',
-                    timeout: 30000
-                });
+                // Fetched server-side (signed / authenticated fallbacks) so PDFs are included too.
+                const file = await fetchDocumentFile(doc);
+                const extension = file.ext;
+                const fileName = `${doc.tenant_name || 'tenant'}_${doc.document_type || 'document'}_${doc.id}.${extension}`;
+                const response = { data: file.buffer };
 
                 zip.file(fileName, response.data);
                 addedCount++;

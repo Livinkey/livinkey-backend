@@ -11,11 +11,17 @@ const uploadFile = (file, folder) => {
             return reject(new Error("File buffer is empty or missing"));
         }
 
+        // PDFs are stored as RAW assets. Cloudinary blocks public delivery of PDFs stored as
+        // "image" assets (what resource_type "auto" produces), which made agreements impossible
+        // to preview or download. Raw assets keep the .pdf extension in their public_id.
+        const isPdf = file.mimetype === "application/pdf" || (file.buffer.slice(0, 5).toString("ascii") === "%PDF-");
+        const baseName = String(file.originalname || "document").replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 60) || "document";
+        const options = isPdf
+            ? { folder, resource_type: "raw", public_id: `${baseName}_${Date.now()}.pdf`, use_filename: false, unique_filename: false }
+            : { folder, resource_type: "auto" };
+
         const stream = cloudinary.uploader.upload_stream(
-            {
-                folder,
-                resource_type: "auto"
-            },
+            options,
             (error, result) => {
                 if (error) {
                     console.error("Cloudinary Upload Error:", error);

@@ -84,32 +84,27 @@ adminRouter.post(
     tenantDocumentController.downloadDocuments
 );
 
-// DOWNLOAD SINGLE DOCUMENT - Requires documents.view permission
-adminRouter.get(
-    "/:documentId/download",
-    permissionMiddleware("documents", "view"),
-    async (req, res) => {
-        try {
-            const { documentId } = req.params;
-            const document = await require("../models/tenant.document.model").getDocumentById(documentId);
-
-            if (!document) {
-                return res.status(404).json({
-                    success: false,
-                    message: "Document not found"
-                });
-            }
-
-            return res.redirect(document.document_url);
-        } catch (error) {
-            console.error("Download Document Error:", error);
-            return res.status(500).json({
-                success: false,
-                message: error.message || "Internal server error"
-            });
+// DOWNLOAD / PREVIEW SINGLE DOCUMENT - Requires documents.view permission
+// The file is streamed through the API (not redirected to Cloudinary) so PDFs such as agreements
+// always open: correct Content-Type, inline preview, real file name on download.
+const sendAdminDocument = (inline) => async (req, res) => {
+    try {
+        const document = await require("../models/tenant.document.model").getDocumentById(req.params.documentId);
+        if (!document) {
+            return res.status(404).json({ success: false, message: "Document not found" });
         }
+        return await require("../services/document.file.service").sendDocument(res, document, { inline });
+    } catch (error) {
+        if (res.headersSent) return res.end();
+        console.error("Document delivery error:", error.message);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.status ? error.message : "Could not open the document. Please try again."
+        });
     }
-);
+};
+adminRouter.get("/:documentId/view", permissionMiddleware("documents", "view"), sendAdminDocument(true));
+adminRouter.get("/:documentId/download", permissionMiddleware("documents", "view"), sendAdminDocument(false));
 
 // Mount admin routes under /admin
 router.use("/admin", adminRouter);
