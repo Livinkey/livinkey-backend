@@ -195,7 +195,7 @@ async function buildDocumentSummary({ reqNat, reqInt }) {
     tenants.forEach(t => {
         const required = t.residency === "international" ? reqInt : reqNat;
         const have = byTenant[t.id] || new Set();
-        const missing = required.filter(k => !have.has(k));
+        const missing = require("../config/document.types").missingKeys(required, have);
         out[t.id] = { uploaded: have.size, required: required.length, missing, complete: missing.length === 0 };
     });
     return out;

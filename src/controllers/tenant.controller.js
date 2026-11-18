@@ -842,10 +842,36 @@ const unblockTenant = async (req, res) => {
     }
 };
 
+/**
+ * POST /api/tenants/:id/reset-password  (super admin only; works for tenants and guests)
+ * New temporary credentials are generated and sent to the tenant; the super admin never sees them.
+ */
+const resetTenantPassword = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (!id) return res.status(400).json({ success: false, message: "Invalid tenant id." });
+
+        const out = await require("../services/password.reset.service").resetTenantPassword(id);
+        try {
+            await require("../services/activity.log.service").adminAction(req, "tenant_password_reset", "tenants", {
+                tenantId: id, entityType: "tenant", entityId: id, metadata: { channels: out.channels }
+            });
+        } catch (_) {}
+
+        const via = out.channels.length ? ` by ${out.channels.join(" and ")}` : "";
+        return res.json({ success: true, message: `A new temporary password was sent to ${out.name}${via}.`, data: { channels: out.channels } });
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ success: false, message: error.message });
+        console.error("Reset tenant password error:", error);
+        return res.status(500).json({ success: false, message: "Could not reset the password." });
+    }
+};
+
 module.exports = {
     getTenantFullDetails,
     blockTenant,
     unblockTenant,
+    resetTenantPassword,
     createTenant,
     getAllTenants,
     getTenantStats,

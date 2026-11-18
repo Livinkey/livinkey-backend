@@ -256,6 +256,13 @@ router.post(
     tenantController.unblockTenant
 );
 
+// RESET PASSWORD - super admin only. New temporary credentials are generated and sent to the tenant.
+router.post(
+    "/:id/reset-password",
+    roleMiddleware("super_admin"),
+    tenantController.resetTenantPassword
+);
+
 // GET TENANT BY ID - Requires tenants.view permission
 router.get(
     "/:id",

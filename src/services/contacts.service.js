@@ -25,6 +25,9 @@ const resolveContact = async (userId, userType) => {
             email: r.email,
             phone: r.phone,
             countryCode: r.country_code,
+            // The tenant's OWN second number (international tenants). The parent's number
+            // (`parent_phone`) is deliberately never selected: messages must never go to parents.
+            otherPhone: r.international_phone || null,
             userType: r.role === "guest" ? "guest" : "tenant",
         };
     } catch (err) {

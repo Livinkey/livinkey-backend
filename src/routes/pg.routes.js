@@ -57,6 +57,14 @@ router.delete("/:id/offers/:offerId", roleMiddleware("super_admin", "admin"), pe
 router.get("/:id/room-display", roleMiddleware("super_admin", "admin"), permissionMiddleware("pgs", "view"), roomsDisplayController.get);
 router.put("/:id/room-display", roleMiddleware("super_admin", "admin"), permissionMiddleware("pgs", "edit"), roomsDisplayController.save);
 
+// CHANGE HOW MANY TENANTS A ROOM ALLOWS - from Tenants > Add tenant (needs tenants.add)
+router.put(
+    "/rooms/:roomId/capacity",
+    roleMiddleware("super_admin", "admin"),
+    permissionMiddleware("tenants", "add"),
+    pgController.updateRoomCapacity
+);
+
 // GET PG BY ID - Requires pgs.view permission
 router.get(
     "/:id",

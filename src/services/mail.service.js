@@ -4,6 +4,7 @@ const {
     buildEmailTemplate, 
     buildOTPContent, 
     buildWelcomeContent, 
+    buildPasswordResetByAdminContent,
     buildBillContent,
     buildCustomMessageContent,
     buildEFRROExpiryContent 
@@ -27,6 +28,26 @@ const sendOTPEmail = async (email, otp, purpose = "Login") => {
         from: `"Livinkey" <${process.env.EMAIL_USER}>`,
         to: email,
         subject: `🔐 Livinkey ${purpose} Verification`,
+        html
+    });
+};
+
+// ============ PASSWORD RESET BY AN ADMINISTRATOR (new credentials) ============
+const sendPasswordResetByAdminEmail = async (email, name, loginId, temporaryPassword, loginUrl = null) => {
+    const html = buildEmailTemplate({
+        title: '🔑 Your Livinkey password was reset',
+        content: buildPasswordResetByAdminContent(name, loginId, temporaryPassword, loginUrl),
+        headerIcon: '🔑',
+        headerLabel: 'Livinkey',
+        headerColor: '#92C24A',
+        alertMessage: 'For your security, you will be asked to set a new password after you sign in.',
+        alertColor: '#92C24A',
+        footerText: 'This is an automated message, please do not reply.'
+    });
+    await transporter.sendMail({
+        from: `"Livinkey" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: '🔑 Your Livinkey password was reset',
         html
     });
 };
@@ -956,6 +977,7 @@ const sendAdminStayExpiryEmail = async (email, adminName, tenantName, pgName, en
 
 module.exports = {
     sendOTPEmail,
+    sendPasswordResetByAdminEmail,
     sendWelcomeAdminEmail,
     sendWelcomeTenantEmail,
     sendWelcomeGuestEmail,

@@ -33,7 +33,10 @@ const messageOf = (body) => {
 };
 
 /** The docs do not describe the reply format, so success is judged defensively. */
+const NOT_ON_WHATSAPP = /\b(not\s+(?:a\s+)?(?:on\s+)?whats\s?app|no\s+whats\s?app|not\s+registered(?:\s+on\s+whats\s?app)?|invalid\s+(?:whats\s?app\s+)?(?:number|mobile|recipient)|number\s+(?:is\s+)?not\s+(?:valid|available|registered))\b/i;
+
 const looksFailed = (body) => {
+    if (NOT_ON_WHATSAPP.test(typeof body === "string" ? body : JSON.stringify(body || ""))) return true;
     if (body && typeof body === "object") {
         const st = body.status ?? body.success ?? body.result ?? body.code;
         if (body.success === false || st === false) return true;

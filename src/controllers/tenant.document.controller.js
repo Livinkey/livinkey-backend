@@ -172,7 +172,7 @@ const deleteAllDocumentsAdmin = async (req, res) => {
 
         return res.json({
             success: true,
-            message: `${deleted} document(s) deleted successfully`,
+            message: `${deleted} document${Number(deleted) === 1 ? '' : 's'} deleted successfully`,
             deleted_count: deleted
         });
 

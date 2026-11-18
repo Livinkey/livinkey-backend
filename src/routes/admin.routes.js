@@ -64,6 +64,14 @@ router.get(
     adminController.getAllAdmins
 );
 
+router.post(
+    "/:id/reset-password",
+    authMiddleware,
+    activityAudit,
+    roleMiddleware("super_admin"),
+    adminController.resetAdminPassword
+);
+
 router.put(
     "/:id/permissions",
     authMiddleware,

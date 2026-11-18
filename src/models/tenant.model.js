@@ -1004,7 +1004,7 @@ const checkRoomAvailability = async (roomId, additionalOccupants = 1) => {
         if (available < additionalOccupants) {
             return {
                 available: false,
-                message: `Only ${available} spot(s) available in this room`
+                message: available <= 0 ? "This room is full. Increase the number of tenants allowed for it, or choose another room." : `Only ${available} spot${available === 1 ? '' : 's'} available in this room`
             };
         }
         

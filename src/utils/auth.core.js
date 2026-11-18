@@ -86,15 +86,26 @@ const assertAccountActive = async (decoded) => {
     const cached = accountCache.get(key);
     if (cached && Date.now() - cached.at < ACCOUNT_CACHE_TTL_MS) {
         if (!cached.value.ok) throw new AuthError(401, cached.value.code || "ACCOUNT_DISABLED", cached.value.message);
+        assertTokenNotOlderThanPasswordReset(decoded, cached.value.passwordChangedAt);
         return cached.value;
     }
 
     let rows;
     try {
-        if (isAdmin) {
-            [rows] = await db.execute("SELECT id, name, role, is_active FROM admins WHERE id = ? LIMIT 1", [decoded.id]);
-        } else {
-            [rows] = await db.execute("SELECT id, full_name, role, is_active, is_blocked, block_reason FROM tenants WHERE id = ? LIMIT 1", [decoded.id]);
+        try {
+            if (isAdmin) {
+                [rows] = await db.execute("SELECT id, name, role, is_active, password_changed_at FROM admins WHERE id = ? LIMIT 1", [decoded.id]);
+            } else {
+                [rows] = await db.execute("SELECT id, full_name, role, is_active, is_blocked, block_reason, password_changed_at FROM tenants WHERE id = ? LIMIT 1", [decoded.id]);
+            }
+        } catch (colErr) {
+            // password_changed_at is added at server start; never lock people out if that has not run yet.
+            if (colErr.code !== "ER_BAD_FIELD_ERROR") throw colErr;
+            if (isAdmin) {
+                [rows] = await db.execute("SELECT id, name, role, is_active FROM admins WHERE id = ? LIMIT 1", [decoded.id]);
+            } else {
+                [rows] = await db.execute("SELECT id, full_name, role, is_active, is_blocked, block_reason FROM tenants WHERE id = ? LIMIT 1", [decoded.id]);
+            }
         }
     } catch (dbError) {
         // Never treat a database hiccup as an authentication failure.
@@ -110,11 +121,21 @@ const assertAccountActive = async (decoded) => {
     } else if (rows[0].is_active === 0 || rows[0].is_active === false) {
         value = { ok: false, message: "This account has been deactivated. Please contact support." };
     } else {
-        value = { ok: true, role: rows[0].role, name: rows[0].name || rows[0].full_name || null };
+        value = { ok: true, role: rows[0].role, name: rows[0].name || rows[0].full_name || null, passwordChangedAt: rows[0].password_changed_at || null };
     }
     accountCache.set(key, { at: Date.now(), value });
     if (!value.ok) throw new AuthError(401, value.code || "ACCOUNT_DISABLED", value.message);
+    assertTokenNotOlderThanPasswordReset(decoded, value.passwordChangedAt);
     return value;
+};
+
+/** A password reset by a super admin ends every session that was signed in before it. */
+const assertTokenNotOlderThanPasswordReset = (decoded, passwordChangedAt) => {
+    if (!passwordChangedAt || !decoded.iat) return;
+    const changedSec = Math.floor(new Date(passwordChangedAt).getTime() / 1000);
+    if (Number.isFinite(changedSec) && decoded.iat < changedSec) {
+        throw new AuthError(401, "TOKEN_INVALID", "Your password was reset by an administrator. Please sign in with your new password.");
+    }
 };
 
 /** Friendly text shown to a blocked tenant (login screen / session-ended notice). */

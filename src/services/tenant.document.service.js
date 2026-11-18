@@ -2,7 +2,7 @@ const db = require("../config/db");
 const TenantDocumentModel = require("../models/tenant.document.model");
 const TenantModel = require("../models/tenant.model");
 const { uploadFile, deleteFile } = require("./upload.service");
-const { INTERNATIONAL_DOCUMENTS, NATIONAL_DOCUMENTS, VEHICLE_DOCUMENTS, VEHICLE_DOCUMENT_KEYS, DOCUMENT_TYPES } = require("../config/document.types");
+const { INTERNATIONAL_DOCUMENTS, NATIONAL_DOCUMENTS, VEHICLE_DOCUMENTS, VEHICLE_DOCUMENT_KEYS, DOCUMENT_TYPES, LEGACY_ALIASES } = require("../config/document.types");
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -99,8 +99,17 @@ const uploadDocument = async (tenantId, documentType, file) => {
             }
         }
 
-        // Check if document already exists
-        const existing = await TenantDocumentModel.getDocumentsByTenantAndType(tenantId, documentType);
+        // The agreement has several pages, so it must be ONE PDF (the upload middleware has already
+        // replaced the declared mimetype with the real one, read from the file's magic bytes).
+        if (documentDefinition.pdfOnly && (!file || file.mimetype !== 'application/pdf')) {
+            throw new Error(`The ${documentDefinition.label} has more than one page, so please upload it as a single PDF file.`);
+        }
+
+        // Check if document already exists (an old single-sided Aadhaar upload counts as the front)
+        let existing = await TenantDocumentModel.getDocumentsByTenantAndType(tenantId, documentType);
+        if (!existing && LEGACY_ALIASES[documentType]) {
+            existing = await TenantDocumentModel.getDocumentsByTenantAndType(tenantId, LEGACY_ALIASES[documentType]);
+        }
         let replacedOld = null;
         if (existing) {
             if (existing.review_status === 'rejected') {
@@ -172,11 +181,17 @@ const getTenantDocuments = async (tenantId) => {
     // Check which documents are uploaded
     const uploadedTypes = documents.map(doc => doc.document_type);
     
-    const documentStatus = requiredDocs.map(doc => ({
-        ...doc,
-        uploaded: uploadedTypes.includes(doc.key),
-        document: documents.find(d => d.document_type === doc.key) || null
-    }));
+    const documentStatus = requiredDocs.map(doc => {
+        const legacyKey = LEGACY_ALIASES[doc.key];
+        const found = documents.find(d => d.document_type === doc.key)
+            || (legacyKey ? documents.find(d => d.document_type === legacyKey) : null)
+            || null;
+        return {
+            ...doc,
+            uploaded: uploadedTypes.includes(doc.key) || !!found,
+            document: found
+        };
+    });
 
     return {
         tenant: {

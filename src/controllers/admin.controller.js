@@ -605,3 +605,28 @@ exports.getAdminDashboard = async (req, res) => {
         });
     }
 };
+
+/**
+ * POST /api/admins/:id/reset-password  (super admin only)
+ * New temporary credentials are generated and sent to the admin; the super admin never sees them.
+ */
+exports.resetAdminPassword = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (!id) return res.status(400).json({ success: false, message: "Invalid admin id." });
+
+        const out = await require("../services/password.reset.service").resetAdminPassword(id, req.admin.id);
+        try {
+            await require("../services/activity.log.service").adminAction(req, "admin_password_reset", "admins", {
+                entityType: "admin", entityId: id, metadata: { channels: out.channels }
+            });
+        } catch (_) {}
+
+        const via = out.channels.length ? ` by ${out.channels.join(" and ")}` : "";
+        return res.json({ success: true, message: `A new temporary password was sent to ${out.name}${via}.`, data: { channels: out.channels } });
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ success: false, message: error.message });
+        console.error("Reset admin password error:", error);
+        return res.status(500).json({ success: false, message: "Could not reset the password." });
+    }
+};

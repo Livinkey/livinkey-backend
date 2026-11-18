@@ -939,7 +939,7 @@ const checkAndSendDocumentReminders = async () => {
             return { sent: 0, message: "No active tenants found." };
         }
 
-        const { INTERNATIONAL_DOCUMENTS, NATIONAL_DOCUMENTS } = require("../config/document.types");
+        const { INTERNATIONAL_DOCUMENTS, NATIONAL_DOCUMENTS, LEGACY_ALIASES } = require("../config/document.types");
 
         let notificationsSent = 0;
         const details = [];
@@ -955,12 +955,13 @@ const checkAndSendDocumentReminders = async () => {
             );
             const uploadedTypes = uploadedDocs.map(d => d.document_type);
 
-            const missingDocs = requiredDocs.filter(d => !uploadedTypes.includes(d.key));
+            // an old single-sided Aadhaar upload still counts as the front side
+            const missingDocs = requiredDocs.filter(d => !uploadedTypes.includes(d.key) && !(LEGACY_ALIASES[d.key] && uploadedTypes.includes(LEGACY_ALIASES[d.key])));
 
             if (missingDocs.length > 0) {
                 const docLabel = missingDocs.length === 1
                     ? missingDocs[0].label
-                    : `${missingDocs[0].label} and ${missingDocs.length - 1} other document(s)`;
+                    : `${missingDocs[0].label} and ${missingDocs.length - 1} other document${missingDocs.length - 1 === 1 ? '' : 's'}`;
 
                 try {
                     await NotificationEventManager.onTenantDocumentReminder(tenant, docLabel);

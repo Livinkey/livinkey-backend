@@ -328,6 +328,9 @@ async function ensureSchema() {
         `).catch(e => console.error("short_links:", e.message));
 
         await addColumnIfMissing(conn, "messages", "expires_at", "expires_at DATETIME NULL").catch(() => {});
+        // Set when a super admin resets someone's password: older sessions (tokens issued before it) stop working.
+        await addColumnIfMissing(conn, "tenants", "password_changed_at", "password_changed_at DATETIME NULL").catch(() => {});
+        await addColumnIfMissing(conn, "admins", "password_changed_at", "password_changed_at DATETIME NULL").catch(() => {});
         await addColumnIfMissing(conn, "maintenance_requests", "completion_reminder_at", "completion_reminder_at DATETIME NULL").catch(() => {});
 
         console.log("✅ Admin console schema ready");

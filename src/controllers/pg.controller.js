@@ -478,7 +478,26 @@ const togglePGStatus = async (req, res) => {
     }
 };
 
+const updateRoomCapacity = async (req, res) => {
+    try {
+        const roomId = parseInt(req.params.roomId, 10);
+        if (!roomId) return res.status(400).json({ success: false, message: "Invalid room." });
+        const data = await pgService.updateRoomCapacity(roomId, req.body.capacity);
+        try {
+            await require("../services/activity.log.service").adminAction(req, "room_capacity_updated", "pgs", {
+                entityType: "room", entityId: roomId, metadata: { room: data.room_number, from: data.previous_capacity, to: data.capacity }
+            });
+        } catch (_) {}
+        return res.json({ success: true, message: `Room ${data.room_number} now allows ${data.capacity} tenant${data.capacity === 1 ? '' : 's'}.`, data });
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ success: false, message: error.message });
+        console.error("Update room capacity error:", error);
+        return res.status(500).json({ success: false, message: "Could not update the room." });
+    }
+};
+
 module.exports = {
+    updateRoomCapacity,
     createPG,
     getAllPGs,
     getPGStats,

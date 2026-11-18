@@ -52,6 +52,25 @@ const normalizePhone = (phone, countryCode = null) => {
     return isValidE164(out) ? out : null;
 };
 
+/**
+ * For a tenant's SECOND number (stored in `international_phone`). There is no separate country-code column
+ * for it, so we only accept it when it carries its own code: "+255 712 345 678", "00255712345678" or
+ * "255712345678" (11-15 digits). A bare 10-digit number is ambiguous (the default code +91 would message a
+ * stranger), so it is rejected and the caller simply skips that number.
+ */
+const normalizeInternationalOnly = (phone) => {
+    if (phone === null || phone === undefined) return null;
+    const raw = String(phone).trim().replace(/^whatsapp:/i, "");
+    if (!raw) return null;
+    if (raw.startsWith("+") || raw.startsWith("00")) return normalizePhone(raw);
+    const d = digitsOnly(raw).replace(/^0+/, "");
+    if (d.length >= 11 && d.length <= 15) {
+        const out = "+" + d;
+        return isValidE164(out) ? out : null;
+    }
+    return null;
+};
+
 /** "+9198••••••10" – safe for logs and admin UI */
 const maskPhone = (e164) => {
     const s = String(e164 || "");
@@ -59,4 +78,4 @@ const maskPhone = (e164) => {
     return s.slice(0, 3) + "•".repeat(Math.max(s.length - 5, 2)) + s.slice(-2);
 };
 
-module.exports = { normalizePhone, isValidE164, maskPhone, digitsOnly, DEFAULT_COUNTRY_CODE };
+module.exports = { normalizePhone, normalizeInternationalOnly, isValidE164, maskPhone, digitsOnly, DEFAULT_COUNTRY_CODE };

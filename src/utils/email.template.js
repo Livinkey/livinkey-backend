@@ -164,6 +164,45 @@ const buildOTPContent = (otp, purpose = "Login") => {
  * @param {Object} extraFields - Extra fields to display
  * @returns {string} - Welcome HTML content
  */
+const escHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/** Credentials e-mail body for a password reset done by an administrator. */
+const buildPasswordResetByAdminContent = (name, loginId, password, loginUrl = null) => `
+    <tr>
+        <td style="color: #000000; font-size: 24px; font-weight: 600; padding-bottom: 8px; text-align: center;">
+            Your password was reset
+        </td>
+    </tr>
+    <tr>
+        <td style="color: #4a5568; font-size: 16px; line-height: 1.6; text-align: center; padding-bottom: 10px;">
+            Hello <strong>${escHtml(name)}</strong>, a Livinkey administrator has reset your password. Use the temporary password below to sign in.
+        </td>
+    </tr>
+    <tr>
+        <td style="padding: 20px 0;">
+            <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #f8faf5; border-radius: 12px; border: 1px solid #e8ecf1;">
+                <tr>
+                    <td style="padding: 30px;">
+                        <p style="color: #000000; font-size: 16px; font-weight: 600; margin: 0 0 16px 0; text-align: center;">Your New Login Details</p>
+                        <div style="background: #ffffff; border-radius: 8px; padding: 16px; border: 1px solid #e8ecf1; margin-bottom: 12px;">
+                            <p style="color: #4a5568; font-size: 14px; margin: 0 0 4px 0;"><strong style="color: #000000;">Login (email or phone):</strong></p>
+                            <p style="color: #000000; font-size: 16px; font-weight: 500; margin: 0; font-family: 'Courier New', monospace;">${escHtml(loginId)}</p>
+                        </div>
+                        <div style="background: #ffffff; border-radius: 8px; padding: 16px; border: 1px solid #e8ecf1; margin-bottom: 12px;">
+                            <p style="color: #4a5568; font-size: 14px; margin: 0 0 4px 0;"><strong style="color: #000000;">Temporary password:</strong></p>
+                            <p style="color: #000000; font-size: 16px; font-weight: 500; margin: 0; font-family: 'Courier New', monospace;">${escHtml(password)}</p>
+                        </div>
+                        ${loginUrl ? `<p style="text-align:center;margin:16px 0 0 0;"><a href="${escHtml(loginUrl)}" style="background:#92C24A;color:#000;text-decoration:none;font-weight:600;padding:10px 22px;border-radius:8px;display:inline-block;">Sign in</a></p>` : ""}
+                        <p style="color: #e74c3c; font-size: 14px; margin-top: 16px; margin-bottom: 0; text-align: center;">
+                            ⚠️ You will be asked to choose a new password the first time you sign in. Never share this password. If you did not expect this, contact your PG manager.
+                        </p>
+                    </td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+`;
+
 const buildWelcomeContent = (name, email, password, extraFields = {}) => {
     let extraHtml = '';
     for (const [key, value] of Object.entries(extraFields)) {
@@ -596,6 +635,7 @@ module.exports = {
     buildEmailTemplate,
     buildOTPContent,
     buildWelcomeContent,
+    buildPasswordResetByAdminContent,
     buildBillContent,
     buildCustomMessageContent,
     buildEFRROExpiryContent

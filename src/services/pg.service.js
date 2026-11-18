@@ -495,7 +495,44 @@ const togglePGStatus = async (pgId, isActive) => {
     }
 };
 
+/**
+ * Change how many tenants a room may hold (rooms.capacity) – used from Tenants > Add tenant.
+ * Never goes below the number of people already living in the room.
+ */
+const MAX_ROOM_CAPACITY = 10;
+const updateRoomCapacity = async (roomId, newCapacity) => {
+    const cap = Number(newCapacity);
+    if (!Number.isInteger(cap) || cap < 1 || cap > MAX_ROOM_CAPACITY) {
+        throw Object.assign(new Error(`Number of tenants must be a whole number from 1 to ${MAX_ROOM_CAPACITY}.`), { status: 400 });
+    }
+    const connection = await db.getConnection();
+    try {
+        await connection.beginTransaction();
+        const [rows] = await connection.execute(
+            `SELECT r.id, r.room_number, r.capacity, COALESCE(ro.occupied_count, 0) AS occupied_count
+               FROM rooms r LEFT JOIN room_occupancy ro ON ro.room_id = r.id
+              WHERE r.id = ? AND r.is_active = 1 FOR UPDATE`,
+            [roomId]
+        );
+        if (!rows.length) throw Object.assign(new Error("Room not found."), { status: 404 });
+        const room = rows[0];
+        const occupied = Number(room.occupied_count) || 0;
+        if (cap < occupied) {
+            throw Object.assign(new Error(`${occupied} tenant${occupied === 1 ? '' : 's'} currently live in room ${room.room_number}, so it cannot allow fewer than ${occupied}. Check out a tenant first.`), { status: 400 });
+        }
+        await connection.execute("UPDATE rooms SET capacity = ? WHERE id = ?", [cap, roomId]);
+        await connection.commit();
+        return { id: room.id, room_number: room.room_number, previous_capacity: Number(room.capacity), capacity: cap, occupied_count: occupied, available: cap - occupied };
+    } catch (err) {
+        try { await connection.rollback(); } catch (_) {}
+        throw err;
+    } finally {
+        connection.release();
+    }
+};
+
 module.exports = {
+    updateRoomCapacity,
     createPG,
     getAllPGs,
     getPGById,
