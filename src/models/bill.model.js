@@ -335,9 +335,13 @@ const getBills = async (filters = {}) => {
     }
 
     if (filters.search) {
-        query += ` AND (t.full_name LIKE ? OR t.email LIKE ? OR t.phone LIKE ?)`;
-        const searchPattern = `%${filters.search}%`;
-        params.push(searchPattern, searchPattern, searchPattern);
+        // Every word must match somewhere (name, email, phone, PG, room, month); LIKE wildcards are escaped.
+        const words = String(filters.search).trim().split(/\s+/).filter(Boolean).slice(0, 8);
+        for (const w of words) {
+            query += ` AND (t.full_name LIKE ? OR t.email LIKE ? OR t.phone LIKE ? OR p.name LIKE ? OR r.room_number LIKE ? OR b.billing_month LIKE ?)`;
+            const pat = `%${w.replace(/[\\%_]/g, '\\$&')}%`;
+            params.push(pat, pat, pat, pat, pat, pat);
+        }
     }
 
     query += ` ORDER BY b.created_at DESC`;
